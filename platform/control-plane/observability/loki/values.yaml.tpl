@@ -68,18 +68,22 @@ loki:
 # `loki-s3-credentials` Secret'ının (05-observability.sh `install_loki()`,
 # Rook OBC'den kopyalanır) S3 kimlik bilgilerini container'a ortam
 # değişkeni olarak enjekte eder — GERÇEK sır değeri BU DOSYADA değil,
-# yalnızca Secret ADI var. NOT (dürüstçe işaretli): `extraEnv`'in
-# grafana/loki chart'ının SingleBinary/read/write/backend şablonlarının
-# TAMAMINA uygulandığı bu görevde GERÇEK bir chart kurulumuna karşı CANLI
-# doğrulanmadı — statik olarak chart'ın genel `extraEnv` deseni (diğer
-# grafana chart'larıyla TUTARLI) varsayıldı.
-extraEnv:
-  - name: AWS_ACCESS_KEY_ID
-    valueFrom:
-      secretKeyRef: {name: loki-s3-credentials, key: AWS_ACCESS_KEY_ID}
-  - name: AWS_SECRET_ACCESS_KEY
-    valueFrom:
-      secretKeyRef: {name: loki-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
+# yalnızca Secret ADI var.
+#
+# DÜZELTME (code review #2, KRİTİK): bu alan ÖNCEDEN KÖK SEVİYEDE
+# (`extraEnv:`) tanımlıydı — önceki komentin "chart'ın genel `extraEnv`
+# deseni varsayıldı, CANLI doğrulanmadı" itirafı DOĞRU çıktı: kullanıcının
+# GERÇEK `helm template` render'ı, `deploymentMode: SingleBinary`
+# kullanıldığında kök seviyedeki `extraEnv`'in HİÇBİR container'a
+# UYGULANMADIĞINI (StatefulSet'in `loki` container'ında `env: []`)
+# kanıtladı — grafana/loki chart'ı `extraEnv`'i YALNIZCA `singleBinary.
+# extraEnv`/`read.extraEnv`/`write.extraEnv`/`backend.extraEnv` gibi HER
+# DEPLOYMENT MODUNA ÖZEL alt-alanlardan okur, kök seviyeden DEĞİL. Bu
+# turda `helm template loki grafana/loki --version 6.16.0 -f
+# <bu-dosya>` ile CANLI doğrulandı: `singleBinary.extraEnv` (aşağıya,
+# `singleBinary:` bloğunun İÇİNE taşındı) StatefulSet'in `loki`
+# container'ının `env` alanında GERÇEKTEN görünüyor (AWS_ACCESS_KEY_ID/
+# AWS_SECRET_ACCESS_KEY, secretKeyRef ile).
 
 # DÜZELTME (Faz 12b, GERÇEK bir kind cluster'ında keşfedildi): chart 6.16.0
 # `deploymentMode: SingleBinary` KULLANILDIĞINDA BİLE `read`/`write`/
@@ -98,6 +102,13 @@ backend:
 
 singleBinary:
   replicas: 1
+  extraEnv:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef: {name: loki-s3-credentials, key: AWS_ACCESS_KEY_ID}
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef: {name: loki-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
   persistence:
     storageClass: ceph-block
     size: 20Gi

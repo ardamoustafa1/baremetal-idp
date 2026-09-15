@@ -87,9 +87,30 @@ spec:
     # bkz. tenant/xrd.yaml, ama quotaTier/networkTier gibi ALANLAR hâlâ
     # değiştirilebilir kalırdı). Bu kural, bir UPDATE'in yalnızca (a) claim'in
     # KENDİ oidcGroup'undaki kullanıcılar (gerçek self-servis — kendi
-    # tenant'ını güncellemek), (b) platform-admins, veya (c) ArgoCD'nin
-    # GitOps akışı (asıl denetim PR incelemesinde) tarafından yapılmasına
-    # izin verir.
+    # tenant'ını güncellemek), (b) platform-admins, (c) ArgoCD'nin GitOps
+    # akışı (asıl denetim PR incelemesinde), veya (d) Crossplane'in KENDİ
+    # controller'ı (aşağıya bakın) tarafından yapılmasına izin verir.
+    #
+    # DÜZELTME (code review #1, KRİTİK — bu turda keşfedildi): Crossplane'in
+    # controller SA'sı (`system:serviceaccount:crossplane-system:crossplane`)
+    # İSTİSNA listesinde YOKTU. Crossplane'in claim controller'ı, BİR CLAIM'İN
+    # KENDİSİNİ (Tenant XRC'sini) `status`/finalizer/`crossplane.io/composite`
+    # bağlama annotation'ı gibi alanlarla GÜNCELLEMEK için DÜZENLİ olarak
+    # UPDATE isteği gönderir — bu kural OLMADAN bu meşru, control-plane
+    # reconcile'ı `system:serviceaccounts:crossplane-system` (oidcGroup DEĞİL,
+    # platform-admins DEĞİL, ArgoCD DEĞİL) grubunda olduğu için REDDEDİLİYORDU
+    # (kullanıcının `kyverno apply --userinfo` testiyle CANLI kanıtlandı: fail:
+    # 1). Sonuç: bir Tenant claim'i KABUL EDİLSE BİLE, Crossplane'in ardından
+    # yapması gereken normal reconcile güncellemeleri BLOKE olur — provisioning
+    # SESSİZCE takılı kalırdı. ArgoCD'nin İSTİSNASIYLA AYNI mantık/AYNI desen
+    # (tüm namespace'e, SPESİFİK bir SA adına DEĞİL, güvenilir — Helm chart'ın
+    # varsayılan SA adı sürümler arası değişebilir; provider SA'ları da AYNI
+    # namespace'te, AYNI güven sınırı İÇİNDEDİR) ile Crossplane'in kendi
+    # namespace'i (`crossplane-system`) İSTİSNA edildi. Bu istisna claim'in
+    # `spec`'ini KORUMASIZ BIRAKMAZ: Crossplane'in KENDİSİ `spec` alanlarını
+    # (oidcGroup/quotaTier/networkTier) OTONOM OLARAK DEĞİŞTİRMEZ (yalnızca
+    # `status`/finalizer/annotation reconcile eder) — asıl `spec` koruması
+    # zaten `oidcGroup` için XRD'nin CEL immutable kuralıyla SAĞLANIYOR.
     - name: only-owner-or-admin-can-update
       match:
         any:
@@ -110,6 +131,9 @@ spec:
           conditions:
             all:
               - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:crossplane-system:') }}"
                 operator: Equals
                 value: false
               - key: "{{ request.userInfo.groups || `[]` }}"

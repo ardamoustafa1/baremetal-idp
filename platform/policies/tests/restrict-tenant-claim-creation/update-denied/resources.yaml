@@ -1,0 +1,12 @@
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: acme-prod
+  namespace: tenant-requests
+spec:
+  teamName: acme
+  costCenter: "CC-1042"
+  environment: prod
+  networkTier: open
+  quotaTier: large
+  oidcGroup: tenant-acme

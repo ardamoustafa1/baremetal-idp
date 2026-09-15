@@ -2,6 +2,16 @@
 # Cilium'un kendi sağlık kontrolü ve node-to-node trafiği.
 # default-deny bunları da keserdi; kesilirse "cilium status" bozuk görünür ve
 # gerçek arızadan ayırt edilemez.
+#
+# DÜZELTME (code review #4'ün yan bulgusu — ccnp-00-allow-dns.yaml İLE AYNI
+# kök neden): bu politika da hem `ingress:` HEM `egress:` kural listesi
+# TANIMLIYOR — `enableDefaultDeny` AÇIKÇA belirtilmezse Cilium bu İKİ YÖN
+# için de İMPLİCİT default-deny'i ETKİNLEŞTİRİR. Buradaki `endpointSelector`
+# (`reserved:health`) DAR olduğu için blast radius ccnp-00'daki kadar
+# KATASTROFİK değildi (yalnızca Cilium'un kendi health-check endpoint'ini
+# etkiler, genel pod'ları DEĞİL) — ama AYNI SINIF hata, AYNI dosyada
+# tekrarlanmasın diye AYNI düzeltme (bilinçli, açık `enableDefaultDeny:
+# false`) buraya da uygulandı.
 # =============================================================================
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
@@ -15,6 +25,9 @@ spec:
   endpointSelector:
     matchLabels:
       "reserved:health": ""
+  enableDefaultDeny:
+    ingress: false
+    egress: false
   ingress:
     - fromEntities:
         - remote-node

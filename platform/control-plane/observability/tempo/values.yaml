@@ -7,15 +7,32 @@
 # gömülüydü — Velero için ZATEN çözülen "ArgoCD ham .tpl'i git'ten
 # OLDUĞU GİBİ okur" riskiyle AYNI sınıf, ama burada SIR MATERYALİ İÇİN
 # daha ciddi bir hâli. Artık `access_key`/`secret_key` BOŞ bırakılıp
-# `extraEnv` ile `tempo-s3-credentials` Secret'ı (05-observability.sh
+# `tempo.extraEnv` ile `tempo-s3-credentials` Secret'ı (05-observability.sh
 # `install_tempo()`, Rook OBC'den kopyalanır) AWS_ACCESS_KEY_ID/
 # AWS_SECRET_ACCESS_KEY ortam değişkenleri ÜZERİNDEN referans alınıyor —
 # Tempo'nun S3 istemcisi de (Loki ile AYNI, AWS SDK uyumlu) bu alanlar
 # boşken standart kimlik bilgisi zincirine (env değişkenleri) düşer. Dosya
 # artık HİÇBİR SIR İÇERMİYOR — güvenle render edilip commit edilebilir.
+#
+# DÜZELTME (code review #3, KRİTİK): `extraEnv` ÖNCEDEN KÖK SEVİYEDE
+# tanımlıydı — önceki komentteki "CANLI doğrulanmadı" itirafı DOĞRU
+# çıktı: kullanıcının GERÇEK `helm template` render'ı, grafana/tempo
+# chart'ının kök seviyedeki `extraEnv`'i OKUMADIĞINI (StatefulSet'in
+# `tempo` container'ında `env: null`) kanıtladı — doğru alan
+# `tempo.extraEnv`'dir (aşağıya, `tempo:` bloğunun İÇİNE taşındı). Bu
+# turda `helm template tempo grafana/tempo --version 1.10.3 -f
+# <bu-dosya>` ile CANLI doğrulandı: `tempo.extraEnv` StatefulSet'in
+# `tempo` container'ının `env` alanında GERÇEKTEN görünüyor.
 # =============================================================================
 
 tempo:
+  extraEnv:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef: {name: tempo-s3-credentials, key: AWS_ACCESS_KEY_ID}
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef: {name: tempo-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
   storage:
     trace:
       backend: s3
@@ -24,24 +41,12 @@ tempo:
         bucket: tempo-storage
         insecure: true
         forcepathstyle: true
-        # access_key/secret_key BİLİNÇLİ OLARAK BOŞ/TANIMSIZ — aşağıdaki
+        # access_key/secret_key BİLİNÇLİ OLARAK BOŞ/TANIMSIZ — yukarıdaki
         # `extraEnv`'e bakın.
 
   resources:
     requests: {cpu: 250m, memory: 512Mi}
     limits:   {cpu: 500m, memory: 1Gi}
-
-# NOT (dürüstçe işaretli): `extraEnv`'in grafana/tempo chart'ının pod
-# şablonuna uygulandığı bu görevde GERÇEK bir chart kurulumuna karşı
-# CANLI doğrulanmadı — statik olarak chart'ın genel `extraEnv` deseni
-# (diğer grafana chart'larıyla TUTARLI) varsayıldı.
-extraEnv:
-  - name: AWS_ACCESS_KEY_ID
-    valueFrom:
-      secretKeyRef: {name: tempo-s3-credentials, key: AWS_ACCESS_KEY_ID}
-  - name: AWS_SECRET_ACCESS_KEY
-    valueFrom:
-      secretKeyRef: {name: tempo-s3-credentials, key: AWS_SECRET_ACCESS_KEY}
 
 persistence:
   enabled: true

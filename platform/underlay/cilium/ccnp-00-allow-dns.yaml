@@ -8,6 +8,25 @@
 # L7 DNS kuralı (matchPattern "*") aynı zamanda Hubble'a hangi pod'un hangi
 # ismi sorduğunu gösterir — Faz 6'da tenant egress'ini DNS adıyla kısıtlamanın
 # (ADR-0001 Karar 2.2 #1) temeli budur.
+#
+# DÜZELTME (code review #4, KRİTİK): `endpointSelector: {}` KÜMEDEKİ HER
+# endpoint'i seçer ve bu politika bir `egress:` kural listesi TANIMLAR —
+# Cilium'un GERÇEK semantiğine göre (bkz. https://docs.cilium.io/en/stable/
+# security/policy/intro/ "When either ingress or egress rules are specified
+# ... default behavior for that direction changes to deny-all") bir endpoint'i
+# SEÇİP o yönde (burada: egress) EN AZ BİR kural TANIMLAYAN her politika,
+# `enableDefaultDeny` AÇIKÇA `false` yapılmadıkça o YÖN için İMPLİCİT
+# default-deny'i DE ETKİNLEŞTİRİR — bu, `ENABLE_DEFAULT_DENY` bayrağından
+# TAMAMEN BAĞIMSIZDIR (bkz. `01-underlay.sh` `install_network_policies()`,
+# bu politika bayrak kontrolünden ÖNCE, HER ZAMAN uygulanıyordu). Yani BU
+# DOSYANIN KENDİSİ (kullanıcı "default-deny KAPALI" sansa bile), tek
+# başına, KÜMEDEKİ HER pod'un egress'ini yalnızca DNS'e (53/UDP-TCP,
+# kube-dns) KISITLIYORDU — Git/Kubernetes API/Vault/S3/servisler-arası TÜM
+# diğer trafik SESSİZCE KESİLİYORDU (yukarıdaki başlık yorumunun "bunlar
+# kısıtlayıcı değil" iddiasının TAM TERSİ). `ccnp-99-default-deny.yaml.tpl`
+# BU MEKANİZMAYI ZATEN doğru kullanıyordu (`enableDefaultDeny: {ingress:
+# true, egress: true}`, BİLİNÇLİ OLARAK etkinleştirmek İÇİN) — bu dosyaya
+# TERS yönde (etkinleştirmemek İÇİN) AYNI alan eklendi.
 # =============================================================================
 apiVersion: cilium.io/v2
 kind: CiliumClusterwideNetworkPolicy
@@ -19,8 +38,15 @@ metadata:
 spec:
   description: >-
     Tüm endpoint'lerin kube-dns'e DNS sorgusu yapmasına izin verir ve
-    L7 DNS görünürlüğü açar. default-deny'nin ön koşuludur.
+    L7 DNS görünürlüğü açar. Yalnızca bir İZİN kuralıdır — enableDefaultDeny
+    BİLİNÇLİ OLARAK false: bu politika KENDİ BAŞINA hiçbir endpoint'i
+    diğer trafik için kısıtlamamalı (kısıtlama YALNIZCA ayrı, açıkça
+    ENABLE_DEFAULT_DENY=true ile etkinleştirilen ccnp-99-default-deny'nin
+    işidir).
   endpointSelector: {}
+  enableDefaultDeny:
+    ingress: false
+    egress: false
   egress:
     - toEndpoints:
         - matchLabels:

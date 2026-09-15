@@ -1,0 +1,8 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: UserInfo
+metadata:
+  name: other-tenant-requester
+userInfo:
+  username: mallory
+  groups:
+    - tenant-mallory

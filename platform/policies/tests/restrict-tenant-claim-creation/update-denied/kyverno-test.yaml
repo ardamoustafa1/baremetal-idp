@@ -1,0 +1,17 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: non-owner-update-denied
+policies:
+  - ../../../validation/04-restrict-tenant-claim-creation.yaml
+resources:
+  - resources.yaml
+userinfo: userinfo.yaml
+variables: values.yaml
+results:
+  - policy: restrict-tenant-claim-creation
+    rule: only-owner-or-admin-can-update
+    resources:
+      - acme-prod
+    kind: Tenant
+    result: fail

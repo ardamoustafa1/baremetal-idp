@@ -1,0 +1,10 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Values
+metadata:
+  name: values
+policies:
+  - name: restrict-tenant-claim-creation
+    resources:
+      - name: acme-prod
+        values:
+          request.operation: UPDATE

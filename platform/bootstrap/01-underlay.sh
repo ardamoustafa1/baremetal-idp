@@ -924,7 +924,17 @@ verify_harbor() {
 install_network_policies() {
   step "7/7  Cilium ağ politikaları"
 
-  # İzin politikaları her zaman uygulanır — bunlar kısıtlayıcı değil.
+  # İzin politikaları her zaman, ENABLE_DEFAULT_DENY kontrolünden ÖNCE
+  # uygulanır — bunlar KISITLAYICI DEĞİLDİR (code review #4'te bu iddia
+  # CANLI/statik olarak sınandı: ccnp-00/01'in KENDİLERİ `enableDefaultDeny:
+  # {ingress: false, egress: false}` TAŞIR — bu OLMADAN Cilium'un GERÇEK
+  # semantiği, bir `egress`/`ingress` kural listesi tanımlayan HER
+  # politikanın o yön için İMPLİCİT default-deny'i KENDİLİĞİNDEN
+  # etkinleştirmesiydi, ENABLE_DEFAULT_DENY bayrağından TAMAMEN BAĞIMSIZ —
+  # yani bu iki dosya `enableDefaultDeny:false` OLMADAN uygulandığında,
+  # "default-deny KAPALI" sanılan bir kurulumda bile KÜMEDEKİ HER pod'un
+  # egress'i SESSİZCE yalnızca DNS'e KISITLANIRDI. Bkz. ccnp-00-allow-dns.
+  # yaml'ın başlık yorumu).
   kubectl apply -f "${UNDERLAY_DIR}/cilium/ccnp-00-allow-dns.yaml"
   kubectl apply -f "${UNDERLAY_DIR}/cilium/ccnp-01-allow-health.yaml"
   ok "İzin politikaları uygulandı (DNS, health)"
