@@ -1,0 +1,26 @@
+# =============================================================================
+# CloudNativePG operatörü — Helm values (Faz 12h, code review #11'in çözümü)
+#
+# BU DOSYADA STATİK KİMLİK BİLGİSİ YOK. Operatör kendisi tenant Postgres
+# Cluster'larını (`compositions/postgresql/`) İZLER — kimlik bilgisi
+# gerektirmez, her Cluster kendi Secret'larını kendi namespace'inde tutar.
+# =============================================================================
+
+replicaCount: 1
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: 500m, memory: 256Mi}
+
+monitoring:
+  # kube-prometheus-stack'in ServiceMonitor CRD'si Faz 4'ten beri kurulu
+  # (bu Application wave 1'de, ama gerçek reconcile CRD var olana kadar
+  # yalnızca bekler — Kubernetes API sunucusu "no matches for kind" ile
+  # DERHAL BAŞARISIZ OLMAZ, sync'i bloke etmez, tıpkı cert-manager'ın
+  # ServiceMonitor'u gibi).
+  podMonitorEnabled: false
+  # NOT: operatörün KENDİ metrikleri (tenant Cluster'ların DEĞİL) — bu
+  # bayrak yalnızca operatörün kendi pod'unu izler; tenant Postgres
+  # metrikleri `compositions/postgresql/function.k`'nin KENDİ
+  # `metricsService`/`serviceMonitor` çifti ile ayrı yönetilir (Faz 12h,
+  # code review #13'ün çözümü).

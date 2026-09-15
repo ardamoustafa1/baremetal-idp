@@ -158,18 +158,28 @@ roleBinding = {
         annotations = _resAnnoAlwaysReady("rolebinding")
         labels = labels
     }
+    # DÜZELTME (Faz 12h, code review #14): ÖNCEDEN yalnızca `oidc:${oidcGroup}`
+    # vardı — ama `policies/rbac/tenant-claim-rbac.yaml`'daki
+    # ClusterRoleBinding ÖNEKSİZ grup adları kullanıyordu VE Kyverno
+    # politikaları (04/06) ZATEN her iki biçimi de (önekli/öneksiz) BİRDEN
+    # listeliyordu (bkz. o dosyalardaki "HER İKİ biçim de" yorumu) — üç
+    # farklı yer üç farklı kurala göre yazılmıştı. Tek bir standart:
+    # `docs/runbooks/k8s-api-server-oidc.md`'de GERÇEKTEN yapılandırılan
+    # `--oidc-groups-prefix=oidc:` BİRİNCİL biçimdir, ama Kyverno'nun zaten
+    # kullandığı "her iki biçimi de listele" savunma deseni HER YERDE
+    # uygulanıyor — API server konfigürasyonu ileride değişirse/farklı bir
+    # ortamda farklıysa (ör. prefix hiç ayarlanmamışsa) bu RoleBinding YİNE
+    # doğru çalışır.
     subjects = [
         {
             kind = "Group"
             apiGroup = "rbac.authorization.k8s.io"
-            # "oidc:" öneki — API server'ın `--oidc-groups-prefix=oidc:` ile
-            # kurulduğu VARSAYIMI (bkz. docs/runbooks/k8s-api-server-oidc.md,
-            # açık karar #13/teknik borç #17'nin çözümü). Önek olmadan
-            # (API server OIDC ayarları henüz yoksa) bu RoleBinding zaten
-            # HİÇBİR OIDC token'ıyla eşleşmez — dolayısıyla önek eklemek
-            # MEVCUT (zaten işlevsiz) durumu KÖTÜLEŞTİRMEZ, yalnızca OIDC
-            # kurulduğunda doğru çalışmasını sağlar.
             name = "oidc:${oidcGroup}"
+        }
+        {
+            kind = "Group"
+            apiGroup = "rbac.authorization.k8s.io"
+            name = oidcGroup
         }
     ]
     roleRef = {

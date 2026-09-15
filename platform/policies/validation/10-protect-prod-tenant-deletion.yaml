@@ -1,0 +1,106 @@
+# =============================================================================
+# Prod tenant claim'lerinin silinmesi için ayrı bir onay adımı — code review
+# #12'nin çözümü.
+#
+# GERÇEK RİSK: `apps/06-tenant-requests-appset.yaml.tpl`'in
+# `syncPolicy.automated.prune: true` olması + `tenant-requests` reposundan
+# BİR DOSYANIN silinmesi, ArgoCD'nin bu Tenant claim'ini OTOMATİK olarak
+# PRUNE etmesine yol açar — bu da Crossplane'in composed kaynakları (namespace,
+# CNPG Cluster, PVC'ler) silme zincirini BAŞLATIR. StorageClass'ların
+# `reclaimPolicy: Delete` olması (bilinçli, bkz. o dosyanın yorumu — "Kurtarma
+# yolu Velero'dur") ile birleşince: git'te TEK bir dosya silme işlemi, ekstra
+# bir onay adımı OLMADAN gerçek disk verisinin kaybına dönüşebiliyordu.
+#
+# BU POLİTİKA NEDEN YALNIZCA Tenant CLAIM'İNİ (namespace/XTenant'ı DEĞİL)
+# HEDEFLİYOR: `protect-tenant-resourcequota.yaml`'daki (Faz 12c) canlı keşfe
+# bakın — bir DELETE'i, o kaynağın normal bir GC/cascade ZİNCİRİNİN PARÇASI
+# olduğu yerde engellemek, silme işlemini SONSUZA KADAR "Terminating"te
+# TAKILI bırakabilir. Namespace/XTenant silme, TAM OLARAK böyle bir cascade
+# ZİNCİRİDİR (Crossplane finalizer'ları tarafından tetiklenir) — onu da
+# gatelemek aynı sınıf hatayı TEKRARLARDI. Tenant CLAIM'i ise farklıdır:
+# hiçbir otomatik GC/cascade onu SİLMEZ — yalnızca bir insan (PR) veya
+# ArgoCD'nin prune'u onu siler; bu yüzden burada gatelemek GÜVENLİDİR VE
+# TAM OLARAK asıl "ön kapı"yı (git dosya silme → ArgoCD prune) kapsar.
+#
+# ONAY SÜRECİ: `spec.environment: prod` olan bir Tenant claim'i silinmeden
+# ÖNCE, claim'e şu İKİ annotation elle (ayrı bir PR/adımla) eklenmelidir:
+#   platform.internal/deletion-approved-by: "<onaylayan kişi>"
+#   platform.internal/deletion-approved-reason: "<gerekçe>"
+# Bu, `require-pss-restricted-clusterwide.yaml`'daki PolicyException
+# gerekçe/onay deseniyle AYNIDIR (Faz 10) — yeni bir desen İCAT EDİLMEDİ.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: protect-prod-tenant-deletion
+  annotations:
+    policies.kyverno.io/title: Protect prod Tenant claims from unapproved deletion
+    policies.kyverno.io/category: Multi-Tenancy / Data Protection
+    policies.kyverno.io/severity: critical
+    policies.kyverno.io/subject: Tenant
+    policies.kyverno.io/description: >-
+      spec.environment=prod olan bir Tenant claim'i, gerekçeli/onaylı
+      annotation'lar olmadan silinemez — ArgoCD'nin otomatik prune'u DAHİL.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  # DÜZELTME: her onay annotation'ı AYRI bir kural olarak kontrol edilir
+  # (deny.conditions.all İÇİNE "any" iç içe koymak yerine) — Kyverno CLI'nin
+  # kabul ettiği en basit/en az riskli koşul şekli budur; iki annotation'dan
+  # HERHANGİ biri eksikse, o annotation'ın kendi kuralı reddeder (bir
+  # policy'de birden fazla kural VARSA, HERHANGİ birinin reddi TÜM isteği
+  # reddeder — bu yüzden "ikisi de gerekli" davranışı korunur).
+  rules:
+    - name: require-deletion-approved-by-for-prod
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: DELETE
+      validate:
+        message: >-
+          Bu, spec.environment=prod olan bir Tenant claim'i — silinmeden
+          ÖNCE claim'e "platform.internal/deletion-approved-by" annotation'ı
+          AYRI bir PR/adımla eklenmelidir. Bkz. docs/runbooks/
+          disaster-recovery.md "Prod tenant silme onay süreci".
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.oldObject.spec.environment || '' }}"
+                operator: Equals
+                value: "prod"
+              - key: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-by\" || '' }}"
+                operator: Equals
+                value: ""
+
+    - name: require-deletion-approved-reason-for-prod
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: DELETE
+      validate:
+        message: >-
+          Bu, spec.environment=prod olan bir Tenant claim'i — silinmeden
+          ÖNCE claim'e "platform.internal/deletion-approved-reason" annotation'ı
+          AYRI bir PR/adımla eklenmelidir. Bkz. docs/runbooks/
+          disaster-recovery.md "Prod tenant silme onay süreci".
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.oldObject.spec.environment || '' }}"
+                operator: Equals
+                value: "prod"
+              - key: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
+                operator: Equals
+                value: ""

@@ -1,0 +1,23 @@
+# =============================================================================
+# Velero'nun K8s obje/PV yedeklerini yazacağı Rook-Ceph RGW bucket'ı — Loki/
+# Tempo/Harbor ile BİREBİR AYNI desen (bkz. observability/resources/
+# objectbucketclaims.yaml): `rook-ceph` namespace'inde, sabit bucketName,
+# `ceph-bucket` StorageClass'ı. `06-velero.sh` bu OBC'nin Secret'ını okuyup
+# `velero` namespace'ine kopyalar.
+#
+# BİRİNCİL yedek hedefi budur — Rook-Ceph'in TAMAMEN kaybı riskine karşı
+# BAĞIMSIZ DEĞİLDİR (bkz. docs/runbooks/disaster-recovery.md §3.1'in
+# "KRİTİK MİMARİ RİSK" notu). İsteğe bağlı, küme-dışı İKİNCİL bir hedef için
+# bkz. bu dizindeki values.yaml.tpl'in "VELERO_OFFSITE_*" bölümü.
+# =============================================================================
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: velero-backups
+  namespace: rook-ceph
+  labels:
+    platform.internal/managed-by: velero-bootstrap
+    platform.internal/layer: control-plane
+spec:
+  bucketName: velero-backups
+  storageClassName: ceph-bucket

@@ -608,7 +608,7 @@ setup_pki() {
     # Keycloak için gerçek bir cert-manager Certificate isteği canlı olarak
     # "common name keycloak.apps.example.internal not allowed by this role"
     # ile KESİN olarak REDDEDİLDİ (bu servisler `vault-issuer-dev`'i
-    # kullanıyor — bkz. cert-manager/resources/clusterissuers.yaml.tpl — bu
+    # kullanıyor — bkz. cert-manager/clusterissuers.yaml.tpl — bu
     # yüzden yalnızca "dev" rolüne bu ikinci domain eklendi, diğer env
     # rollerine DEĞİL, çünkü platform servisleri şu an yalnızca dev
     # issuer'ı kullanıyor). Bare base domain (alt alan adlarıyla birlikte)
@@ -858,7 +858,7 @@ install_cert_manager() {
   export VAULT_CA_BUNDLE_B64
   mkdir -p "${CERT_MANAGER_DIR}/rendered"
   envsubst '${VAULT_CA_BUNDLE_B64}' \
-    < "${CERT_MANAGER_DIR}/resources/clusterissuers.yaml.tpl" \
+    < "${CERT_MANAGER_DIR}/clusterissuers.yaml.tpl" \
     > "${CERT_MANAGER_DIR}/rendered/clusterissuers.yaml"
 
   # Webhook hazır olduktan hemen sonra ClusterIssuer apply'ı yarış (race)

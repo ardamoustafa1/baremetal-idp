@@ -357,8 +357,38 @@ spec:
             }
 
             # =============================================================================
-            # 6. ServiceMonitor — Faz 4'e kadar (Prometheus Operator CRD'si) inert kalır
+            # 6. Metrics Service + ServiceMonitor — Faz 4'e kadar (Prometheus Operator
+            #    CRD'si) inert kalır
+            #
+            # DÜZELTME (Faz 12h, code review #13): `enablePodMonitor = False` (CNPG'nin
+            # KENDİ PodMonitor'ü KAPALI, "tek izleme yolu" tercihiyle) + aşağıdaki
+            # ServiceMonitor birlikte kullanılıyordu — AMA ServiceMonitor bir Pod'u
+            # DEĞİL, bir SERVICE'i (kendi `spec.selector` ile, Service'in metadata
+            # LABEL'larına göre) hedefler. Bu composition HİÇBİR ZAMAN 9187 portunu
+            # (CNPG'nin postgres-exporter sidecar'ı) açan bir Service ÜRETMİYORDU —
+            # ServiceMonitor'ün hedefleyeceği HİÇBİR Service yoktu, yani Prometheus'un
+            # scrape edeceği SIFIR target vardı (Grafana dashboard'u panel BOŞ kalırdı).
+            # `metricsService` eklendi — `labels` zaten `cnpg.io/cluster=${name}`
+            # içeriyor (yukarıda §0), bu yüzden ServiceMonitor'ün `matchLabels`'ı
+            # EK bir değişiklik olmadan bu yeni Service'i bulur.
             # =============================================================================
+            metricsService = {
+                apiVersion = "v1"
+                kind = "Service"
+                metadata = {
+                    name = "${name}-postgres-metrics"
+                    namespace = tenantRef
+                    annotations = _resAnno("metrics-service")
+                    labels = labels
+                }
+                spec = {
+                    selector = {"cnpg.io/cluster" = name}
+                    ports = [
+                        {name = "metrics", port = 9187, targetPort = 9187, protocol = "TCP"}
+                    ]
+                }
+            }
+
             serviceMonitor = {
                 apiVersion = "monitoring.coreos.com/v1"
                 kind = "ServiceMonitor"
@@ -574,6 +604,7 @@ spec:
                 cluster
                 scheduledBackup
                 networkPolicy
+                metricsService
                 serviceMonitor
                 secretStore
                 pushSecret

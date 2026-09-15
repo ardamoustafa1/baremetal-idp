@@ -1,0 +1,54 @@
+# =============================================================================
+# sync-wave 1 — CloudNativePG operatörü
+#
+# DÜZELTME (Faz 12h, code review #11): bu operatör ÖNCEDEN yalnızca
+# `tests/e2e/kind-chain/run.sh`'te (VERSİYONU SABİTLENMEMİŞ olarak) kuruluyordu
+# — control-plane/README.md onu "⬜ Faz 4" (bekliyor) olarak işaretliyordu ve
+# üretim bootstrap/Application setinde HİÇ karşılığı yoktu. `compositions/
+# postgresql/`'nin ürettiği her `Cluster`/`ScheduledBackup`/`Pooler` (CNPG
+# CRD'leri), bu operatör KURULU DEĞİLSE sonsuza kadar "no matches for kind"
+# ile reconcile edilemez kalır.
+#
+# WAVE 1 (underlay ile aynı seviye, Crossplane/Kyverno/ESO ile PARALEL):
+# CNPG'nin kendisi Vault/cert-manager'a bağımlı DEĞİL — yalnızca `ceph-block`
+# StorageClass'ına (underlay, wave 0) ihtiyaç duyar; postgresql composition'ı
+# (wave 4, compositions) ZATEN bu operatörün CRD'lerinin var olmasını
+# BEKLEYECEK kadar geç çalışır, bu yüzden wave 1 güvenlidir.
+#
+# Bu Application'ın values.yaml'ında GERÇEK SIR YOK — otomatik sync GÜVENLİDİR
+# (cert-manager/kube-prometheus-stack ile AYNI gerekçe).
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cnpg
+  namespace: argocd
+  labels:
+    platform.internal/layer: control-plane
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    - repoURL: "${CNPG_HELM_REPO}"
+      chart: cloudnative-pg
+      targetRevision: "${CNPG_CHART_VERSION}"
+      helm:
+        releaseName: cnpg
+        valueFiles:
+          - $values/platform/control-plane/cloudnative-pg/values.yaml
+    - repoURL: "${PLATFORM_REPO_URL}"
+      targetRevision: "${PLATFORM_REPO_REVISION}"
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cnpg-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true

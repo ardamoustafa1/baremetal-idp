@@ -105,7 +105,7 @@ helm_repo() {
 # 0. Ön kontroller
 # =============================================================================
 preflight() {
-  step "0/5  Ön kontroller"
+  step "0/6  Ön kontroller"
 
   if (( BASH_VERSINFO[0] < 4 )); then
     die "bash 4+ gerekli (bulunan: ${BASH_VERSION}). macOS: brew install bash"
@@ -203,7 +203,7 @@ check_git_placeholders_resolved() {
 # 1. ArgoCD
 # =============================================================================
 install_argocd() {
-  step "1/5  ArgoCD"
+  step "1/6  ArgoCD"
 
   helm_repo argo "${ARGOCD_HELM_REPO}"
   helm repo update argo >/dev/null
@@ -255,7 +255,7 @@ verify_argocd() {
 # 2. AppProject + root-app (App-of-Apps kaydı)
 # =============================================================================
 apply_root_app() {
-  step "2/5  AppProject + root-app (App-of-Apps)"
+  step "2/6  AppProject + root-app (App-of-Apps)"
 
   check_git_placeholders_resolved || die "Önce yukarıdaki adımı tamamlayın."
 
@@ -299,7 +299,7 @@ verify_root_app() {
 'NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status' \
     2>/dev/null | sed 's/^/         /'
 
-  log "  Beklenen child Application'lar: underlay-root, crossplane, kyverno, eso, vault"
+  log "  Beklenen child Application'lar: underlay-root, crossplane, kyverno, eso, cnpg, vault"
   log "  (underlay-root ve vault KASITLI OLARAK 'OutOfSync' kalabilir — bkz."
   log "   00-underlay.yaml.tpl ve 02-vault-placeholder.yaml.tpl'deki notlar)"
   ok "App-of-Apps kaydı doğrulandı"
@@ -309,7 +309,7 @@ verify_root_app() {
 # 3. Crossplane + provider'lar + function-kcl
 # =============================================================================
 sync_crossplane() {
-  step "3/5  Crossplane (sync-wave 1)"
+  step "3/6  Crossplane (sync-wave 1)"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log "[dry-run] ArgoCD Application 'crossplane' senkronize edilecekti"
@@ -432,7 +432,7 @@ verify_crossplane() {
 # 4. Kyverno + ClusterPolicy'ler
 # =============================================================================
 sync_kyverno() {
-  step "4/5  Kyverno (sync-wave 1)"
+  step "4/6  Kyverno (sync-wave 1)"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log "[dry-run] ArgoCD Application 'kyverno' senkronize edilecekti"
@@ -511,7 +511,7 @@ verify_kyverno() {
 # 5. External Secrets Operator (yalnızca operatör)
 # =============================================================================
 sync_eso() {
-  step "5/5  External Secrets Operator (sync-wave 1, yalnızca operatör)"
+  step "5/6  External Secrets Operator (sync-wave 1, yalnızca operatör)"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log "[dry-run] ArgoCD Application 'eso' senkronize edilecekti"
@@ -545,6 +545,47 @@ verify_eso() {
     warn "  ${ss_count} SecretStore bulundu — görev kapsamı 'yalnızca operator' idi, kontrol edin"
   fi
   ok "ESO doğrulandı"
+}
+
+# =============================================================================
+# 6. CloudNativePG operatörü (sync-wave 1) — Faz 12h, code review #11'in
+#    çözümü. ÖNCEDEN yalnızca e2e script'inde kuruluyordu, üretim
+#    bootstrap'ında HİÇ karşılığı yoktu — `compositions/postgresql/`'nin
+#    ürettiği her Cluster/ScheduledBackup bu operatör YOKSA sonsuza kadar
+#    "no matches for kind" ile reconcile edilemez.
+# =============================================================================
+sync_cnpg() {
+  step "6/6  CloudNativePG operatörü (sync-wave 1)"
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log "[dry-run] ArgoCD Application 'cnpg' senkronize edilecekti"
+    return 0
+  fi
+
+  trigger_sync cnpg
+  wait_for "Application 'cnpg' Synced" 300 10 \
+    bash -c "kubectl -n argocd get application cnpg -o jsonpath='{.status.sync.status}' 2>/dev/null | grep -q Synced"
+
+  # NOT: Deployment adı chart'ın fullname template'ine göre değişebilir
+  # (`cnpg-cloudnative-pg` vb.) — sabit bir ad varsaymak yerine, chart'ın
+  # her sürümünde DEĞİŞMEYEN standart Helm/app.kubernetes.io etiketleriyle
+  # (release=cnpg) bekleniyor.
+  wait_for "CNPG operatör Deployment Ready" 300 10 \
+    bash -c "kubectl -n cnpg-system get deployment -l app.kubernetes.io/instance=cnpg -o jsonpath='{.items[0].status.readyReplicas}' 2>/dev/null | grep -qE '^[1-9]'"
+  wait_for "CNPG CRD'leri (clusters.postgresql.cnpg.io)" 120 5 \
+    kubectl get crd clusters.postgresql.cnpg.io
+  wait_for "CNPG CRD'leri (scheduledbackups.postgresql.cnpg.io)" 60 5 \
+    kubectl get crd scheduledbackups.postgresql.cnpg.io
+
+  verify_cnpg
+}
+
+verify_cnpg() {
+  log "DOĞRULAMA: CloudNativePG operatörü"
+  kubectl -n cnpg-system get pods | sed 's/^/         /'
+  log "  \$ kubectl get crd | grep cnpg.io"
+  kubectl get crd 2>/dev/null | grep -c 'cnpg\.io' | sed 's/^/         CRD sayısı: /'
+  ok "CNPG operatörü doğrulandı — compositions/postgresql/ artık bu operatörü kullanabilir"
 }
 
 # =============================================================================
@@ -606,6 +647,7 @@ main() {
     should_run crossplane && verify_crossplane || true
     should_run kyverno    && verify_kyverno    || true
     should_run eso        && verify_eso        || true
+    should_run cnpg       && verify_cnpg       || true
     summary
     return 0
   fi
@@ -615,6 +657,7 @@ main() {
   should_run crossplane && sync_crossplane
   should_run kyverno    && sync_kyverno
   should_run eso        && sync_eso
+  should_run cnpg        && sync_cnpg
 
   summary
   ok "Faz 2 tamamlandı."

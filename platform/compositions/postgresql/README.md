@@ -61,6 +61,63 @@ ESO kimliğiyle erişiliyor (SA-bazlı izolasyon yok) — path prefix'i
 tenant-özel Vault k8s-auth rolleri kadar sıkı bir izolasyon DEĞİLDİR;
 bilinçli bir basitleştirme (bkz. PLATFORM_CONTEXT.md teknik borcu).
 
+## Restore / PITR (Faz 12h, code review #12'nin çözümü)
+
+Bu composition'ın ürettiği `Cluster` kaynağı zaten `backup.barmanObjectStore`
+ile (§1'deki `backupBucket`, Ceph RGW) sürekli WAL archiving yapıyor —
+gerçek kurtarma yolu Velero DEĞİL, CNPG'nin KENDİ `bootstrap.recovery`
+mekanizmasıdır (bkz. `platform/control-plane/velero/README.md`'nin "Ne
+yedekleniyor" tablosu).
+
+**Prosedür (mevcut bir Cluster'ı, KENDİ backup'ından YENİ bir Cluster olarak
+geri yüklemek — CNPG'nin resmi, desteklenen deseni):**
+
+```bash
+# 1. Mevcut Cluster'ın adını/namespace'ini ve backup bucket'ını doğrulayın:
+kubectl -n <tenant-ns> get cluster <name> -o jsonpath='{.spec.backup.barmanObjectStore}'
+
+# 2. YENİ bir Cluster manifesti yazın — externalClusters + bootstrap.recovery
+#    ile AYNI bucket'a işaret eder (orijinal Cluster'ı DEĞİŞTİRMEZ, yanına
+#    yeni bir Cluster açar — kanıtlanmadan orijinali silmeyin):
+cat <<EOF | kubectl apply -f -
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: <name>-restore-test
+  namespace: <tenant-ns>
+spec:
+  instances: 1
+  storage:
+    size: <orijinaliyle AYNI>
+    storageClass: ceph-block
+  bootstrap:
+    recovery:
+      source: original
+  externalClusters:
+    - name: original
+      barmanObjectStore:
+        destinationPath: "s3://<tenantRef>-<name>-backup/"
+        endpointURL: "http://rook-ceph-rgw-\${CEPH_OBJECTSTORE_NAME}.rook-ceph.svc.cluster.local:80"
+        s3Credentials:
+          accessKeyId: {name: "<name>-backup", key: AWS_ACCESS_KEY_ID}
+          secretAccessKey: {name: "<name>-backup", key: AWS_SECRET_ACCESS_KEY}
+EOF
+
+# 3. Yeni Cluster'ın Ready olmasını ve verinin GERÇEKTEN geldiğini doğrulayın:
+kubectl -n <tenant-ns> wait cluster/<name>-restore-test --for=condition=Ready --timeout=300s
+kubectl -n <tenant-ns> exec <name>-restore-test-1 -- psql -U postgres -c "SELECT count(*) FROM <bilinen bir tablo>;"
+
+# 4. Doğrulama SONRASI test Cluster'ını silin (kalıcı bırakmayın — çift kota tüketir):
+kubectl -n <tenant-ns> delete cluster <name>-restore-test
+```
+
+**Dürüstlük notu:** bu prosedür CNPG'nin resmi, desteklenen `bootstrap.
+recovery` mekanizmasına dayanır ve bu composition'ın ZATEN ürettiği
+`barmanObjectStore` yapılandırmasıyla tutarlı olacak şekilde yazıldı — ama
+bu görevde GERÇEK bir cluster'a karşı UÇTAN UCA ÇALIŞTIRILMADI (bkz.
+`platform/control-plane/velero/README.md`'nin RPO/RTO tablosundaki "ÖLÇÜLMEDİ"
+notu). İlk üretim kullanımından ÖNCE bir tenant'ta gerçekten denenmeli.
+
 ## Test etme
 
 ```bash

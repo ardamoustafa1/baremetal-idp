@@ -12,10 +12,10 @@ OIDC entegre (Faz 4), Vault'tan secret alır (Faz 3), Prometheus'a metrik verir 
 | `external-secrets/` | External Secrets Operator (yalnızca operatör) | Vault → küme secret yansıtması — SecretStore Faz 3'te | ✅ Faz 2 |
 | `keycloak/` | Keycloak | OIDC kimlik sağlayıcı | Faz 1 (bkz. teknik borç #8) |
 | `harbor/` | Harbor | Konteyner registry, tenant başına proje, imaj tarama | Faz 1 (bkz. teknik borç #8) |
-| `cloudnative-pg/` | CloudNativePG operatörü | Tenant veritabanları (HA, PITR) | ⬜ Faz 4 |
+| `cloudnative-pg/` | CloudNativePG operatörü | Tenant veritabanları (HA, PITR) | ✅ Faz 12h |
 | `observability/` | kube-prometheus-stack + Loki + Tempo | Metrik, log, trace, uyarı, Grafana (tenant dashboard'ları otomatik) | ✅ Faz 9 |
 | `opencost/` | OpenCost | `cost-center` etiketine dayalı, bare-metal manuel fiyatlandırmalı maliyet raporu | ✅ Faz 9 |
-| `velero/` | Velero (Ceph RGW backend) | Yedekleme ve geri yükleme | ⬜ Sıradaki |
+| `velero/` | Velero (Ceph RGW backend + isteğe bağlı küme-dışı ikincil hedef) | Yedekleme ve geri yükleme | ✅ Faz 12h |
 
 **Bağımlılık:** `underlay/` (L2). `pki/` (L3, Vault) henüz yok — ESO ve
 Crossplane şu an secret'sız çalışıyor, bu Faz 3'ün konusu.
@@ -32,15 +32,17 @@ control-plane/root-app.yaml.tpl          ← 02-control-plane.sh tarafından ell
         ├── 00-underlay.yaml.tpl                wave 0 — otomatik sync KAPALI (adoption)
         ├── 01-crossplane.yaml.tpl              wave 1 ─┐
         ├── 01-kyverno.yaml.tpl                 wave 1  │
-        ├── 01-eso.yaml.tpl                     wave 1  ├─ paralel, birbirine bağımlı değil
+        ├── 01-eso.yaml.tpl                     wave 1  │
+        ├── 01-cnpg.yaml.tpl                    wave 1  ├─ paralel, birbirine bağımlı değil
         ├── 01-kube-prometheus-stack.yaml.tpl   wave 1  │  (Faz 9, otomatik sync AÇIK — sır yok)
         ├── 01-loki.yaml.tpl                    wave 1  │  (Faz 9, otomatik sync KAPALI — S3 sırrı)
         ├── 01-tempo.yaml.tpl                   wave 1 ─┘  (Faz 9, otomatik sync KAPALI — S3 sırrı)
         ├── 02-vault-placeholder.yaml.tpl       wave 2 — otomatik sync KAPALI (Faz 3'e kadar)
+        ├── 02-velero.yaml.tpl                  wave 2 — otomatik sync KAPALI (Faz 12h, S3 sırrı)
         └── 02-opencost.yaml.tpl                wave 2 — otomatik sync AÇIK (Faz 9, sır yok)
 ```
 
-Neden `underlay-root`/`vault`/`loki`/`tempo` otomatik sync'siz: bkz. bu
+Neden `underlay-root`/`vault`/`loki`/`tempo`/`velero` otomatik sync'siz: bkz. bu
 dosyaların kendi içindeki uyarı yorumları ve
 [`bootstrap/README.md`](../bootstrap/README.md).
 

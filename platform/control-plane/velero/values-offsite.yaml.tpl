@@ -1,0 +1,60 @@
+# =============================================================================
+# Velero — İKİNCİL, küme-dışı yedek hedefi overlay (Faz 12h, code review #12).
+#
+# YALNIZCA `VELERO_OFFSITE_ENABLED=true` iken `06-velero.sh` tarafından
+# `-f values.yaml -f values-offsite.yaml` olarak İKİNCİ bir dosya gibi
+# uygulanır (values.yaml'daki `enable_vault_tls`/`values-tls.yaml` overlay
+# DESENİYLE AYNI — yeni bir mekanizma İCAT EDİLMEDİ). Bu overlay, Rook-Ceph
+# RGW'nin (birincil hedef) TAMAMEN kaybına karşı BAĞIMSIZ bir ikinci kopya
+# sağlar (docs/runbooks/disaster-recovery.md §3.1'in işaretlediği riskin
+# gerçek azaltımı).
+# =============================================================================
+
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: velero-backups
+      credential:
+        name: velero-credentials
+        key: cloud
+      config:
+        region: default
+        profile: default
+        s3Url: "http://rook-ceph-rgw-${CEPH_OBJECTSTORE_NAME}.rook-ceph.svc.cluster.local:80"
+        s3ForcePathStyle: "true"
+        insecureSkipTLSVerify: "true"
+    - name: offsite
+      provider: aws
+      bucket: "${VELERO_OFFSITE_S3_BUCKET}"
+      credential:
+        name: velero-credentials
+        key: cloud
+      config:
+        region: "${VELERO_OFFSITE_S3_REGION}"
+        profile: offsite
+        s3Url: "${VELERO_OFFSITE_S3_URL}"
+        s3ForcePathStyle: "${VELERO_OFFSITE_S3_FORCE_PATH_STYLE}"
+
+schedules:
+  daily:
+    schedule: "0 3 * * *"
+    useOwnerReferencesInBackup: false
+    template:
+      storageLocation: default
+      ttl: "720h"
+      includedNamespaces: ["*"]
+      includeClusterResources: true
+  # DÜZELTME (code review #12, "küme dışı yedek kopyası"): AYRI bir Schedule
+  # — Velero, TEK bir backup'ı iki hedefe birden YAZAMAZ (BackupStorageLocation
+  # backup-başınadır) — bu yüzden GENUINE bağımsız bir ikinci kopya için AYNI
+  # veriyi AYRI bir Schedule ile ikinci konuma da yazmak gerekir. Aynı saatte
+  # DEĞİL (03:00 → 03:20) — ikisi birden Ceph RGW'ye eşzamanlı yük bindirmesin.
+  daily-offsite:
+    schedule: "20 3 * * *"
+    useOwnerReferencesInBackup: false
+    template:
+      storageLocation: offsite
+      ttl: "720h"
+      includedNamespaces: ["*"]
+      includeClusterResources: true

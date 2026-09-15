@@ -51,8 +51,15 @@ helm upgrade --install cert-manager jetstack/cert-manager \
 log "2/10 CloudNativePG operatörü kuruluyor..."
 helm repo add cnpg https://cloudnative-pg.github.io/charts >/dev/null 2>&1 || true
 helm repo update cnpg >/dev/null
+# DÜZELTME (Faz 12h, code review 3. bölüm): sürümü SABİTLENMEMİŞTİ — diğer
+# tüm helm install'lar (cert-manager, crossplane) --version ile pinliyken bu
+# atlanmıştı. platform/underlay/versions.env:CNPG_CHART_VERSION ile AYNI
+# (bu script versions.env'i source ETMEZ — kind'e özgü, kasıtlı olarak
+# bağımsız bir script, bkz. dosya başındaki NOT) — sürüm yükseltmesi iki
+# yerde de yapılmalı.
 helm upgrade --install cnpg cnpg/cloudnative-pg \
-  --namespace cnpg-system --create-namespace --wait --timeout 5m >/dev/null
+  --namespace cnpg-system --create-namespace --version 0.22.1 \
+  --wait --timeout 5m >/dev/null
 
 helm repo add hashicorp https://helm.releases.hashicorp.com >/dev/null 2>&1 || true
 helm repo update hashicorp >/dev/null
@@ -75,7 +82,7 @@ log "3/10 vault-unseal (Transit auto-unseal KMS'i — ana Vault'un KENDİSİ DE�
 kubectl create namespace vault-unseal --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl label namespace vault-unseal platform.internal/layer=pki --overwrite >/dev/null
 helm upgrade --install vault-unseal hashicorp/vault \
-  --namespace vault-unseal \
+  --namespace vault-unseal --version 0.29.1 \
   -f "${REPO_ROOT}/platform/pki/vault-unseal/values.yaml" \
   --set server.dataStorage.storageClass=standard \
   --set server.dataStorage.size=1Gi \
@@ -123,7 +130,7 @@ kubectl -n vault create secret generic vault-autounseal-token \
 # GERÇEKTEN çalıştırılırken keşfedilen bir bulgu — bkz. PLATFORM_CONTEXT.md
 # Faz 12 günlüğü).
 helm upgrade --install vault hashicorp/vault \
-  --namespace vault \
+  --namespace vault --version 0.29.1 \
   -f "${REPO_ROOT}/platform/pki/vault/values.yaml" \
   --set server.dataStorage.storageClass=standard \
   --set server.auditStorage.storageClass=standard \
