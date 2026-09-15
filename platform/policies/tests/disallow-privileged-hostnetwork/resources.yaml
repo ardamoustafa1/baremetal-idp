@@ -43,3 +43,24 @@ spec:
       image: cilium/cilium:v1.16.5
       securityContext:
         privileged: true
+---
+# Bu turda bulunan gerçek bir bypass: eskiden yalnızca spec.containers
+# kontrol ediliyordu — bir initContainer'a privileged:true koymak bu
+# kuralı TAMAMEN atlatıyordu (bkz. 02-disallow-privileged-hostnetwork.yaml
+# başlık düzeltme notu). crossplane-system, PSA "restricted" etiketi
+# TAŞIMAYAN bir platform sistem namespace'i (yalnızca kube-system/
+# rook-ceph/metallb-system istisna) — bu senaryoda ikinci bir bariyer YOK.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod-privileged-initcontainer
+  namespace: crossplane-system
+spec:
+  initContainers:
+    - name: init-breakout
+      image: alpine
+      securityContext:
+        privileged: true
+  containers:
+    - name: app
+      image: nginx:1.27

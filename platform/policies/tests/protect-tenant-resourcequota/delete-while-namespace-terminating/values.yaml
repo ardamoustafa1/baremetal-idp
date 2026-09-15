@@ -1,0 +1,15 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Values
+metadata:
+  name: values
+policies:
+  - name: protect-tenant-resourcequota
+    resources:
+      - name: tenant-quota
+        values:
+          nsDeletionTimestamp: "2026-01-01T00:00:00Z"
+          request.operation: DELETE
+      - name: tenant-limits
+        values:
+          nsDeletionTimestamp: "2026-01-01T00:00:00Z"
+          request.operation: DELETE

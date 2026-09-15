@@ -1,0 +1,21 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tenant-admin-cannot-self-delete-quota-while-namespace-active
+policies:
+  - ../../../validation/05-protect-tenant-resourcequota.yaml
+resources:
+  - resources.yaml
+userinfo: userinfo.yaml
+variables: values.yaml
+results:
+  - policy: protect-tenant-resourcequota
+    rule: block-manual-quota-delete-unless-namespace-terminating
+    resources: ["tenant-quota"]
+    kind: ResourceQuota
+    result: fail
+  - policy: protect-tenant-resourcequota
+    rule: block-manual-limitrange-delete-unless-namespace-terminating
+    resources: ["tenant-limits"]
+    kind: LimitRange
+    result: fail

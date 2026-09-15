@@ -18,18 +18,31 @@ auth:
 
 # --- Üretim modu ----------------------------------------------------------
 # DÜZELTME (Faz 12c, GERÇEK bir kind cluster'ında uçtan uca test edildi):
-# `production: true` + `tls.*` etkinleştirildi — Vault PKI (Faz 3) +
-# cert-manager'ın ürettiği `keycloak-tls` Secret'ı (bkz. resources/
-# certificate.yaml.tpl) kullanılıyor. ÖNEMLİ SIRALAMA NOTU: bu, Keycloak'un
-# Faz 1'de (bu dosya) kurulduğu ama Vault PKI'nin ancak Faz 3'te hazır
-# olduğu GERÇEK bir çapraz-faz bağımlılığı yaratır — `docs/runbooks/
-# k8s-api-server-oidc.md`'nin §0'ında ZATEN doğru şekilde işaretlenmişti.
-# Pratik sonuç: ilk kurulumda (Faz 1) bu TLS ayarları `enabled: false`
-# bırakılmalı, Faz 3 (Vault PKI + cert-manager) tamamlandıktan SONRA bu
-# dosya güncellenip Keycloak `helm upgrade` ile YENİDEN uygulanmalıdır
-# (Vault'un kendi self-TLS'i gibi — bkz. docs/runbooks/vault-self-tls.md —
-# BİLİNÇLİ olarak otomatik bootstrap akışına ELLE tetiklenen bir adım
-# olarak bırakıldı).
+# `production: true` açık — bu Vault PKI'ye BAĞLI DEĞİL, TLS'DEN BAĞIMSIZ
+# bir chart ayarı (KC_PROXY/health check modunu etkiler).
+#
+# DÜZELTME (bu turda, taze bir denetimde bulundu — KRİTİK): `tls.*` alanları
+# ÖNCEDEN BU DOSYADA `enabled: true` olarak SABİTLENMİŞTİ — ama bu dosyanın
+# KENDİ üstteki yorumu (ve `certificate.yaml.tpl`'in kendi başlık yorumu)
+# AÇIKÇA "ilk kurulumda (Faz 1) bu TLS ayarları `enabled: false` bırakılmalı,
+# Vault PKI (Faz 3) tamamlandıktan SONRA ayrı bir adımla açılmalı" diyordu —
+# koddaki DEĞER bu NİYETİN TAM TERSİYDİ. Sonuç: `keycloak-tls` Secret'ını
+# üretecek `certificate.yaml.tpl` HİÇBİR script tarafından uygulanmadığı
+# (yalnızca yorumlarda "ayrı bir adımla uygulanacak" deniyordu, o adım hiç
+# YAZILMAMIŞTI) için, sıfır bir cluster'da `install_keycloak()` var OLMAYAN
+# bir Secret'ı mount etmeye çalışıp `ContainerCreating`'de asılı kalıyor,
+# 15 dakika sonra `wait_for` zaman aşımına uğrayıp TÜM Faz 1'i (Harbor VE
+# network policy adımı DAHİL) durduruyordu.
+#
+# ÇÖZÜM: Vault'un KENDİ self-TLS deseniyle (values.yaml + values-tls.yaml
+# İKİ AŞAMALI overlay, bkz. pki/vault/values-tls.yaml) BİREBİR AYNI —
+# `tls.*` bu dosyadan TAMAMEN ÇIKARILDI, `values-tls.yaml.tpl`'e taşındı.
+# `01-underlay.sh`'in `install_keycloak()`'ı artık `keycloak-tls` Secret'ı
+# VARSA `-f values-tls.yaml` overlay'ini EKLİYOR (Vault'un `install_vault()`
+# fonksiyonundaki AYNI koşullu-overlay deseni); Secret'ı GERÇEKTEN üreten
+# adım ise `03-pki.sh`'in YENİ `enable_keycloak_tls()` fonksiyonudur (Vault
+# PKI/cert-manager hazır olduktan SONRA, Faz 3'te çalışır — TAM OLARAK
+# yorumların HER ZAMAN tarif ettiği ama hiç yazılmamış akış).
 production: true
 proxy: edge
 
@@ -45,13 +58,6 @@ extraEnvVars:
   # Faz 1'de realm'i import ile yaratıyoruz (aşağıdaki initdb/realm ConfigMap)
   - name: KEYCLOAK_EXTRA_ARGS
     value: "--import-realm"
-
-# --- TLS (Faz 3+, Vault PKI hazır olunca — yukarıdaki production notuna
-# bakın) -----------------------------------------------------------------
-tls:
-  enabled: true
-  existingSecret: keycloak-tls
-  usePem: true
 
 extraVolumes:
   - name: realm-import

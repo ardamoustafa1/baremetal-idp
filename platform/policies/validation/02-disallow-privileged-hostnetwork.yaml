@@ -37,11 +37,34 @@ spec:
                 - kube-system
                 - rook-ceph
                 - metallb-system
+      # DÜZELTME (bu turda, taze bir denetimde bulundu — KRİTİK): bu kural
+      # ÖNCEDEN YALNIZCA `spec.containers`'ı geziyordu — `spec.initContainers`
+      # ve `spec.ephemeralContainers` HİÇ kontrol edilmiyordu, kuralın KENDİ
+      # mesajı "İSTİSNASIZ" dese de bu doğru DEĞİLDİ. Bu namespace exclude
+      # listesi yalnızca `kube-system`/`rook-ceph`/`metallb-system`'i
+      # kapsıyor — `vault`/`cert-manager`/`argocd`/`external-secrets`/
+      # `crossplane-system`/`kyverno` gibi platformun DİĞER TÜM sistem
+      # namespace'lerinde (bunlar `tenant-*`'ın aksine PSA "restricted"
+      # etiketleri TAŞIMIYOR, bkz. `08-require-pss-restricted.yaml`) bir
+      # initContainer'a `securityContext.privileged: true` koymak bu kuralı
+      # TAMAMEN ATLATIYORDU — tam host-breakout riski. Artık HER ÜÇ container
+      # listesi (containers/initContainers/ephemeralContainers) AYRI birer
+      # `foreach` girdisiyle kontrol ediliyor.
       validate:
         message: >-
-          privileged: true yasaktır. Tenant namespace'lerinde İSTİSNASIZ.
+          privileged: true yasaktır. Tenant namespace'lerinde İSTİSNASIZ —
+          containers/initContainers/ephemeralContainers'ın HİÇBİRİ privileged
+          OLAMAZ.
         foreach:
           - list: "request.object.spec.containers"
+            pattern:
+              =(securityContext):
+                =(privileged): "false"
+          - list: "request.object.spec.initContainers || `[]`"
+            pattern:
+              =(securityContext):
+                =(privileged): "false"
+          - list: "request.object.spec.ephemeralContainers || `[]`"
             pattern:
               =(securityContext):
                 =(privileged): "false"

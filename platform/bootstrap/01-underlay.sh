@@ -115,7 +115,7 @@ preflight() {
     METALLB_IP_RANGE METALLB_POOL_NAME
     CEPH_OSD_DEVICE_FILTER CEPH_POOL_REPLICA_SIZE CEPH_POOL_MIN_REPLICA_SIZE
     CEPH_OBJECTSTORE_NAME
-    HARBOR_ADMIN_PASSWORD HARBOR_HOSTNAME HARBOR_REGISTRY_BUCKET
+    HARBOR_ADMIN_PASSWORD HARBOR_DB_PASSWORD HARBOR_HOSTNAME HARBOR_REGISTRY_BUCKET
     KEYCLOAK_ADMIN_USER KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD
     KEYCLOAK_HOSTNAME KEYCLOAK_REALM
   )
@@ -131,7 +131,7 @@ preflight() {
 
   # --- Parola kalitesi: zayıf parola sessizce kabul edilmez ----------------
   local weak=() pw
-  for v in HARBOR_ADMIN_PASSWORD KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD; do
+  for v in HARBOR_ADMIN_PASSWORD HARBOR_DB_PASSWORD KEYCLOAK_ADMIN_PASSWORD KEYCLOAK_DB_PASSWORD; do
     pw="${!v}"
     if (( ${#pw} < 14 )); then weak+=("$v (< 14 karakter)"); fi
   done
@@ -706,8 +706,26 @@ install_keycloak() {
   render "${CONTROL_PLANE_DIR}/keycloak/values.yaml.tpl" \
          "${CONTROL_PLANE_DIR}/keycloak/values.rendered.yaml"
 
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — KRİTİK): TLS overlay'i
+  # (`values-tls.yaml`) Vault'un `install_vault()`'ndaki AYNI desenle
+  # KOŞULLU olarak eklenir — `keycloak-tls` Secret'ı (03-pki.sh'in YENİ
+  # `enable_keycloak_tls()` fonksiyonu tarafından, Vault PKI/cert-manager
+  # hazır olduktan SONRA üretilir) henüz YOKSA bu adım TAMAMEN atlanır,
+  # sıfır kurulumda `install_keycloak()` var OLMAYAN bir Secret'ı mount
+  # etmeye ÇALIŞMAZ (bkz. values.yaml.tpl'in başlık yorumu — bu, TAM
+  # OLARAK ilk kurulumda Faz 1'i tamamen kilitleyen bug'ın kendisiydi).
+  local -a _keycloak_value_files=(-f "${CONTROL_PLANE_DIR}/keycloak/values.rendered.yaml")
+  if kubectl -n keycloak get secret keycloak-tls >/dev/null 2>&1; then
+    log "  Secret keycloak/keycloak-tls mevcut — TLS overlay (values-tls.yaml) EKLENİYOR."
+    render "${CONTROL_PLANE_DIR}/keycloak/values-tls.yaml.tpl" \
+           "${CONTROL_PLANE_DIR}/keycloak/values-tls.rendered.yaml"
+    _keycloak_value_files+=(-f "${CONTROL_PLANE_DIR}/keycloak/values-tls.rendered.yaml")
+  else
+    log "  Secret keycloak/keycloak-tls henüz YOK — plaintext kurulum (Faz 3 sonrası 'enable_keycloak_tls()' TLS'i açacak)."
+  fi
+
   helm_install keycloak bitnami/keycloak keycloak "${KEYCLOAK_CHART_VERSION}" \
-    -f "${CONTROL_PLANE_DIR}/keycloak/values.rendered.yaml"
+    "${_keycloak_value_files[@]}"
 
   [[ "${DRY_RUN}" == "true" ]] && return 0
 
@@ -797,9 +815,32 @@ install_harbor() {
   ensure_secret harbor harbor-admin-password \
     "HARBOR_ADMIN_PASSWORD=${HARBOR_ADMIN_PASSWORD}"
 
-  # Harbor'un iç PostgreSQL'i için parola (Faz 4'te CNPG'ye taşınacak)
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — YÜKSEK): bu Secret
+  # ÖNCEDEN `HARBOR_ADMIN_PASSWORD`'ü YENİDEN KULLANIYORDU — artık AYRI
+  # `HARBOR_DB_PASSWORD` (bkz. .env.example). AYRICA: Postgres PVC ZATEN
+  # initialize OLDUYSA (yani bu, İLK KURULUM DEĞİL bir YENİDEN ÇALIŞTIRMA
+  # ise) Kubernetes Secret'ı güncellemek Postgres'in KENDİ parolasını
+  # DEĞİŞTİRMEZ (initdb yalnızca BOŞ bir PGDATA'da çalışır) — bu durumda
+  # Secret'taki DEĞER ile GERÇEK DB parolası SESSİZCE SAPARSA harbor-core
+  # kimlik doğrulama hatasıyla BAŞARISIZ olur. PVC zaten varsa ve Secret'ta
+  # FARKLI bir parola duruyorsa AÇIKÇA UYARIYORUZ (Velero'nun Kopia repo
+  # parolası koruma deseniyle AYNI ruhta — "asla sessizce rotasyona izin
+  # verme").
+  local existing_db_pw
+  if kubectl -n harbor get pvc -l app.kubernetes.io/component=database >/dev/null 2>&1 \
+     && [[ -n "$(kubectl -n harbor get pvc -l app.kubernetes.io/component=database -o name 2>/dev/null)" ]] \
+     && kubectl -n harbor get secret harbor-database-password >/dev/null 2>&1; then
+    existing_db_pw="$(kubectl -n harbor get secret harbor-database-password -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+    if [[ -n "${existing_db_pw}" && "${existing_db_pw}" != "${HARBOR_DB_PASSWORD}" ]]; then
+      die "Harbor Postgres PVC'si ZATEN VAR ama .env'deki HARBOR_DB_PASSWORD mevcut Secret'takinden FARKLI.
+     Postgres'in KENDİ parolası initdb'den SONRA DEĞİŞMEZ — Secret'ı güncellemek
+     harbor-core'un DB'ye bağlanmasını KIRAR. HARBOR_DB_PASSWORD'ü ESKİ değere
+     geri alın (kubectl -n harbor get secret harbor-database-password -o jsonpath='{.data.password}' | base64 -d)
+     veya GERÇEKTEN rotasyon istiyorsanız Postgres'in KENDİSİNDE parolayı ELLE değiştirin."
+    fi
+  fi
   ensure_secret harbor harbor-database-password \
-    "password=${HARBOR_ADMIN_PASSWORD}"
+    "password=${HARBOR_DB_PASSWORD}"
 
   render "${CONTROL_PLANE_DIR}/harbor/values.yaml.tpl" \
          "${CONTROL_PLANE_DIR}/harbor/values.rendered.yaml"
@@ -845,14 +886,25 @@ configure_harbor_security_policy() {
   fi
 
   local payload='{"metadata":{"auto_scan":"true","prevent_vul":"true","severity":"high","reuse_sys_cve_allowlist":"true"}}'
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — ORTA): HARBOR_ADMIN_
+  # PASSWORD ÖNCEDEN `curl -u admin:${...}` ile DOĞRUDAN pod ARGV'sine
+  # (spec.containers[0].args) yazılıyordu — bu Pod `--rm` ile silinse de,
+  # VAR OLDUĞU kısa pencerede `kubectl get pod -o yaml` yetkisi olan HERKESE
+  # (VEYA etkinse API server audit log'una) düz metin parola SIZDIRIYORDU.
+  # ÇÖZÜM: curl'ün `-K -` (config-from-stdin) özelliği kullanılıyor — parola
+  # artık ARGV'DE DEĞİL, `kubectl run -i`'nin CALLER'DAN pod'un stdin'ine
+  # ilettiği bir heredoc İÇİNDE (curl'ün KENDİ config-dosyası formatı,
+  # `user = "..."`) taşınıyor; bu asla `ps`/pod spec'te GÖRÜNMEZ.
   kubectl -n harbor run harbor-secpolicy-$$ --rm -i --restart=Never \
     --image=curlimages/curl:8.10.1 --quiet -- \
-    curl -sf --max-time 20 -u "admin:${HARBOR_ADMIN_PASSWORD}" \
+    curl -sf --max-time 20 -K - \
     -X PUT -H "Content-Type: application/json" \
     -d "${payload}" \
-    "http://harbor.harbor.svc/api/v2.0/projects/library" \
+    "http://harbor.harbor.svc/api/v2.0/projects/library" <<CURLCONF \
     && ok "  library projesi: auto_scan=true, prevent_vul=true, severity=high" \
     || warn "  Proje güvenlik politikası uygulanamadı — Harbor henüz tam ayakta olmayabilir (--only harbor ile tekrar deneyin)"
+user = "admin:${HARBOR_ADMIN_PASSWORD}"
+CURLCONF
 }
 
 verify_harbor() {
@@ -892,11 +944,16 @@ verify_harbor() {
 
   # 2. Trivy scanner kayıtlı mı — "Trivy taraması otomatik" için ön koşul
   log "  \$ curl .../api/v2.0/scanners   (Trivy kayıtlı mı)"
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — ORTA): AYNI argv-sızıntı
+  # düzeltmesi — bkz. configure_harbor_security_policy()'nin başlık notu.
   local scanners
   scanners="$(kubectl -n harbor run harbor-scan-$$ --rm -i --restart=Never \
               --image=curlimages/curl:8.10.1 --quiet -- \
-              curl -sf --max-time 20 -u "admin:${HARBOR_ADMIN_PASSWORD}" \
-              "http://harbor.harbor.svc/api/v2.0/scanners" 2>/dev/null || true)"
+              curl -sf --max-time 20 -K - \
+              "http://harbor.harbor.svc/api/v2.0/scanners" 2>/dev/null <<CURLCONF || true
+user = "admin:${HARBOR_ADMIN_PASSWORD}"
+CURLCONF
+)"
   if [[ -n "${scanners}" ]] && echo "${scanners}" | jq -e '.[0].name' >/dev/null 2>&1; then
     echo "${scanners}" | jq -r '.[] | "         \(.name)  default=\(.is_default)  health=\(.health // "?")"'
     ok "  Trivy scanner kayıtlı"

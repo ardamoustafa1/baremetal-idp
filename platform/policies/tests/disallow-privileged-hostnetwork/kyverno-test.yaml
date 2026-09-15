@@ -55,3 +55,15 @@ results:
       - exempt-cilium-agent
     kind: Pod
     result: skip
+  - policy: disallow-privileged-hostnetwork
+    rule: no-privileged-containers
+    resources:
+      - bad-pod-privileged-initcontainer
+    kind: Pod
+    result: fail
+  - policy: disallow-privileged-hostnetwork
+    rule: no-host-network
+    resources:
+      - bad-pod-privileged-initcontainer
+    kind: Pod
+    result: pass

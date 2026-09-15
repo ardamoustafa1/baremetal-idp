@@ -61,12 +61,21 @@ jobs:
       contents: read
     env:
       COSIGN_VERSION: "2.4.1" # BİLEREK v3.x DEĞİL — yukarıdaki KRİTİK notuna bakın
+      # DÜZELTME (bu turda, taze bir denetimde bulundu — YÜKSEK): syft/trivy
+      # ÖNCEDEN `main` dalından, SÜRÜM PİNİ OLMADAN kuruluyordu — bu
+      # dosyanın YUKARIDAKİ KENDİ "KRİTİK: cosign v2.4.1'e SABİTLENMİŞTİR"
+      # notunun anlattığı DERSİN (pin'siz bir aracın davranışı/çıktı formatı
+      # sessizce değişip güvenlik gate'ini bozabilir) İKİ FARKLI ARAÇ için
+      # UYGULANMAMIŞ hâliydi. GitHub API'den ÇEKİLEN GERÇEK, VAR OLAN
+      # sürümlere SABİTLENDİ.
+      SYFT_VERSION: "v1.51.1"
+      TRIVY_VERSION: "v0.74.0"
     steps:
-      - name: Install syft
-        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+      - name: Install syft (pinned, NOT latest/main)
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin "${SYFT_VERSION}"
 
-      - name: Install trivy
-        run: curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+      - name: Install trivy (pinned, NOT latest/main)
+        run: curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin "${TRIVY_VERSION}"
 
       - name: Install cosign (pinned v2.4.1, NOT latest)
         run: |

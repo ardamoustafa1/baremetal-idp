@@ -367,9 +367,28 @@ sync_crossplane() {
 # ServiceAccount adı Provider kurulumunda rastgele üretilir; etiket
 # seçiciyle bulup cluster-admin'e bağlıyoruz (provider-kubernetes/helm'in
 # kendi dokümante ettiği standart kurulum — bkz. crossplane/README.md).
+# DÜZELTME (bu turda, taze bir denetimde bulundu — YÜKSEK): bu fonksiyon
+# ÖNCEDEN provider-kubernetes/provider-helm'in ServiceAccount'larını
+# DOĞRUDAN `cluster-admin`'e bağlıyordu — bu dosyanın KENDİ başlık yorumundaki
+# tasarım kuralı #4 ("Crossplane provider'larında STATİK KİMLİK BİLGİSİ YOK")
+# ile AYNI ruhtaki en-az-yetki ilkesini İHLAL EDİYORDU: `InjectedIdentity`
+# kimlik bilgisi SIZINTISINI önler ama YETKİ KAPSAMINI sınırlamaz. Bu iki
+# provider'a (kötü niyetli/bozuk bir Composition manifesti, bir tedarik
+# zinciri sorunu, ya da bir RCE ile) erişim sağlayan HERHANGİ biri
+# cluster-admin alır — TÜM tenant namespace'leri, TÜM RBAC, TÜM Secret'lar
+# DAHİL çok-kiracılı bir IDP'de KABUL EDİLEMEZ bir blast radius.
+#
+# ÇÖZÜM: `compositions/tenant/function.k` + `compositions/postgresql/
+# function.k`'nin GERÇEKTEN ürettiği HER kaynak türü (`grep -hoE 'kind = "
+# [^"]+"' platform/compositions/*/function.k` ile CANLI çıkarıldı) TEK TEK
+# listelenen, DAR bir ClusterRole — `cluster-admin` YERİNE. Bu YENİ Provider
+# bir kaynak türü daha ÜRETMEYE başlarsa (yeni bir composed resource kind),
+# bu liste GÜNCELLENMELİDİR — PR review'da GÖRÜNÜR bir bakım adımı (Kyverno
+# exclude listelerinin AYNI deseni, bkz. PSS/default-deny istisna
+# listelerindeki tekrarlanan "yeni bileşen eklerken unutma" dersi).
 bind_provider_rbac() {
   local provider="$1"
-  log "RBAC: ${provider} ServiceAccount → cluster-admin"
+  log "RBAC: ${provider} ServiceAccount → dar kapsamlı ClusterRole (cluster-admin DEĞİL)"
 
   local sa
   sa="$(kubectl -n crossplane-system get sa \
@@ -384,9 +403,47 @@ bind_provider_rbac() {
 
   cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane-${provider}-composed-resources
+  labels:
+    platform.internal/managed-by: control-plane-bootstrap
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "resourcequotas", "limitranges", "serviceaccounts", "secrets", "configmaps", "services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates", "issuers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["external-secrets.io"]
+    resources: ["externalsecrets", "secretstores", "pushsecrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["objectbucket.io"]
+    resources: ["objectbucketclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "scheduledbackups"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: crossplane-${provider}-cluster-admin
+  name: crossplane-${provider}-composed-resources
   labels:
     platform.internal/managed-by: control-plane-bootstrap
 subjects:
@@ -395,10 +452,10 @@ subjects:
     namespace: crossplane-system
 roleRef:
   kind: ClusterRole
-  name: cluster-admin
+  name: crossplane-${provider}-composed-resources
   apiGroup: rbac.authorization.k8s.io
 EOF
-  ok "  ${provider}: SA '${sa}' → cluster-admin bağlandı"
+  ok "  ${provider}: SA '${sa}' → dar kapsamlı ClusterRole bağlandı (cluster-admin DEĞİL)"
 }
 
 trigger_sync() {

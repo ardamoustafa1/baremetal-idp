@@ -38,3 +38,25 @@ spec:
   containers:
     - name: cilium-agent
       image: cilium/cilium:v1.16.5
+---
+# initContainers de kontrol edilmeli — bkz. 01-require-pod-resources.yaml
+# başlık düzeltme notu (eskiden yalnızca spec.containers taranıyordu).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: bad-pod-initcontainer-no-limits
+  namespace: tenant-payments-dev
+spec:
+  initContainers:
+    - name: init
+      image: alpine
+  containers:
+    - name: app
+      image: nginx:1.27
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"

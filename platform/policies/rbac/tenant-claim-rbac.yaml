@@ -28,6 +28,27 @@
 # `oidc:` önekli biçimler EKLENDİ — artık üç yer (bu dosya, tenant
 # RoleBinding'i, Kyverno 04/06) AYNI iki biçimi (önekli + öneksiz) kullanıyor.
 # =============================================================================
+# DÜZELTME (bu turda, taze bir denetimde bulundu — YÜKSEK, cross-tenant
+# bilgi ifşası): `tenants` KAYNAĞI ADR-0001 tasarımı gereği TÜM tenant'ların
+# claim'lerinin TEK BİR PAYLAŞIMLI namespace'te (`tenant-requests`)
+# yaşadığı bir kaynaktır — bu yüzden namespace-özel bir `Role`/`RoleBinding`e
+# geçmek TEK BAŞINA bir şey ÇÖZMEZ (aynı paylaşımlı namespace'te KALIR).
+# ÖNCEDEN `list`/`watch` de BU ClusterRole'e DAHİLDİ — yani
+# `platform-tenant-requesters` grubundaki HERHANGİ bir kullanıcı `kubectl
+# get tenants -A` ile TÜM tenant'ların claim'lerini (oidcGroup, costCenter,
+# quotaTier, networkTier) TOPLU olarak okuyabiliyordu; bu K8s RBAC'ın
+# "yalnızca BENİM claim'imi listele" gibi İÇERİK-bazlı bir kısıtı İFADE
+# EDEMEMESİNDEN kaynaklanan GERÇEK bir keşif (reconnaissance) riskiydi.
+# `list`/`watch` KALDIRILDI — geriye kalan `get`, yalnızca ADINI BİLEN bir
+# kullanıcının TEK BİR claim'i sorgulamasına izin verir (TOPLU tarama
+# ARTIK MÜMKÜN DEĞİL); bu, self-servis akışının GERÇEKTEN kullandığı
+# `create`/`update`/`patch`/tekil-`get` işlemlerini ETKİLEMEZ (`kubectl get
+# tenants -A` gibi bir keşif komutu ARTIK "forbidden" döner). KALAN, BİLİNÇLİ
+# kabul edilen sınır: adını TAHMİN EDEN bir kullanıcı hâlâ o TEK claim'i
+# `get` edebilir (K8s RBAC'ın statik doğası bunun ÖTESİNE geçemez — GERÇEK
+# bir çözüm HER tenant'ın claim'ini KENDİ namespace'ine taşımayı gerektirir,
+# bu ADR-0001'in "tek paylaşımlı tenant-requests namespace'i" tasarımını
+# DEĞİŞTİRİR, bu turun kapsamı DIŞINDA bırakıldı).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -37,10 +58,11 @@ metadata:
 rules:
   - apiGroups: ["platform.internal"]
     resources: ["tenants"]
-    verbs: ["create", "get", "list", "watch", "update", "patch"]
+    verbs: ["create", "get", "update", "patch"]
     # NOT: "delete" BİLİNÇLİ OLARAK YOK — tenant silme, tenant-requests
     # reposunda ayrı bir PR + gerekçe gerektirir (conventions.md, tenant-
-    # requests README "Tenant silme" sık sorulan soru).
+    # requests README "Tenant silme" sık sorulan soru). "list"/"watch" de
+    # BİLİNÇLİ OLARAK YOK — yukarıdaki DÜZELTME notuna bakın.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

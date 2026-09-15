@@ -75,6 +75,21 @@ jobs:
         run: |
           python3 -m pip install --quiet PyYAML==6.0.2
           bash platform/policies/security/verify-pss-exemption-sync.sh
+      # DÜZELTME (bu turda, taze bir denetimde bulundu — ORTA): bu script'in
+      # KENDİ `--verify` modu (composition'ların `verify-sync.sh`'iyle AYNI
+      # desen — biri BU workflow'da HER PR'da çalışırken diğeri HİÇBİR
+      # workflow'a bağlı DEĞİLDİ) bir `.tpl` dosyası değiştirilip kardeş
+      # `.yaml`'ı yeniden render EDİLMEDEN commit edilirse bunu yakalar (bu
+      # OTURUMDA Velero/Loki/Tempo/Backstage'te TEKRAR TEKRAR bulunup
+      # düzeltilen HATA SINIFI). `--require-tenant-requests` BİLİNÇLİ OLARAK
+      # KULLANILMIYOR — bu sandbox'ta gerçek bir tenant-requests reposu YOK,
+      # bu yüzden 05/06 dosyalarının BİLİNÇLİ atlanması (⚠️ ile raporlanır,
+      # asla "✅" ile karışmaz) BEKLENEN bir durumdur.
+      - name: render-app-manifests.sh drift kontrolü
+        env:
+          PLATFORM_REPO_URL: "https://github.com/${{ github.repository }}.git"
+          PLATFORM_REPO_REVISION: "main"
+        run: bash platform/bootstrap/render-app-manifests.sh --verify
 
   e2e-chain-test:
     # Faz 11, görev madde 3: kind tabanlı gerçek cluster'da Tenant → Postgres
@@ -98,7 +113,13 @@ jobs:
           set -euo pipefail
           curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
           chmod +x /tmp/kind && sudo mv /tmp/kind /usr/local/bin/
-          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          # DÜZELTME (bu turda, taze bir denetimde bulundu — YÜKSEK): kind/
+          # kubectl/kyverno/crossplane HEPSİ bu workflow'da sürüm pinliyken
+          # helm `main` dalından, PİN OLMADAN kuruluyordu — bir helm sürüm
+          # değişikliği chart-render/CLI davranışını CI çalıştırmaları
+          # ARASINDA sessizce değiştirebilir, hangi sürümün kullanıldığı
+          # geriye dönük İZLENEMEZ hâle gelirdi.
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash -s -- --version v4.2.4
       - name: Kind cluster oluştur
         run: kind create cluster --name platform-e2e --wait 120s
       - name: Uçtan uca zincir testini çalıştır

@@ -42,6 +42,25 @@ metadata:
       tenant-quota ve tenant-limits nesneleri yalnızca XTenant composition'ı
       (Crossplane provider-kubernetes) tarafından yazılabilir — quotaTier
       sınırlarının elle atlatılmasını (bypass) engeller.
+# DÜZELTME (bu turda, taze bir denetimde bulundu — ORTA-YÜKSEK, kota
+# bypass): DELETE'in TAMAMEN dışarıda bırakılması (yukarıdaki (1) notu,
+# GERÇEK ve DOĞRU bir düzeltmeydi) YAN ETKİ olarak YENİ bir açık YARATTI:
+# `compositions/tenant/function.k`'nin ürettiği tenant-admin Role'ü
+# `apiGroups: [""]`, `resources: ["*"]`, `verbs: ["*"]` veriyor — yani
+# tenant-admin (SIRADAN, meşru bir OIDC kullanıcısı, namespace GC'siyle
+# HİÇ İLGİSİ OLMAYAN) `kubectl delete resourcequota tenant-quota` ile
+# KENDİ kotasını DOĞRUDAN silebilir. Crossplane bir sonraki reconcile'da
+# nesneyi YENİDEN OLUŞTURUR — ama BU ARADA (dakikalar sürebilir) namespace'te
+# HİÇBİR CPU/bellek/pod SINIRI YOKTUR; bu pencerede açılan kota-üstü pod'lar
+# kota GERİ GELDİĞİNDE RETROAKTİF olarak tahliye EDİLMEZ. ÇÖZÜM: DELETE'i
+# TEKRAR kapsama al ama YALNIZCA namespace'in KENDİSİ ZATEN silinme
+# sürecinde DEĞİLKEN (`metadata.deletionTimestamp` BOŞ) reddet — GC'nin
+# namespace silme SIRASINDA gönderdiği DELETE (namespace ZATEN Terminating)
+# İZİN VERİLİR, ama namespace'i HİÇ etkilemeyen, TEK BAŞINA bir "quota'yı
+# sil" isteği REDDEDİLİR. Bu, Faz 12c'nin KENDİ bulduğu "namespace sonsuza
+# kadar Terminating'te takılı kalıyordu" regresyonunu TEKRARLAMAZ (o
+# regresyon "DELETE'in HERHANGİ bir koşulda reddedilmesi" yüzündendi, bu
+# sefer namespace ZATEN terminating İKEN DELETE her zaman İZİN VERİLİYOR).
 spec:
   validationFailureAction: Enforce
   background: false
@@ -95,3 +114,68 @@ spec:
               - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:crossplane-system:') }}"
                 operator: Equals
                 value: false
+
+    - name: block-manual-quota-delete-unless-namespace-terminating
+      match:
+        any:
+          - resources:
+              kinds:
+                - ResourceQuota
+              names:
+                - "tenant-quota"
+              namespaces:
+                - "tenant-*"
+              operations:
+                - DELETE
+      context:
+        - name: nsDeletionTimestamp
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ request.namespace }}"
+            jmesPath: "metadata.deletionTimestamp || ''"
+      validate:
+        message: >-
+          'tenant-quota' yalnızca namespace'in KENDİSİ silinme sürecindeyken
+          (namespace teardown/GC) silinebilir — namespace hâlâ AKTİFKEN
+          kotayı tek başına silmek quotaTier sınırlarını GEÇİCİ olarak
+          ATLATIR. Kotayı DEĞİŞTİRMEK için Tenant claim'inizin quotaTier
+          alanını güncelleyin.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:crossplane-system:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ nsDeletionTimestamp }}"
+                operator: Equals
+                value: ""
+
+    - name: block-manual-limitrange-delete-unless-namespace-terminating
+      match:
+        any:
+          - resources:
+              kinds:
+                - LimitRange
+              names:
+                - "tenant-limits"
+              namespaces:
+                - "tenant-*"
+              operations:
+                - DELETE
+      context:
+        - name: nsDeletionTimestamp
+          apiCall:
+            urlPath: "/api/v1/namespaces/{{ request.namespace }}"
+            jmesPath: "metadata.deletionTimestamp || ''"
+      validate:
+        message: >-
+          'tenant-limits' yalnızca namespace'in KENDİSİ silinme sürecindeyken
+          silinebilir — namespace hâlâ AKTİFKEN tek başına silmek yasaktır.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:crossplane-system:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ nsDeletionTimestamp }}"
+                operator: Equals
+                value: ""

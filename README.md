@@ -5,14 +5,22 @@ Platform**. Ürün ekipleri kendi altyapılarını (namespace, kota, ağ politik
 veritabanı, registry projesi, secret, sertifika, yedek) **bir PR açarak**
 talep eder; platform ekibi ticket işlemez, API sağlar.
 
-> **Mevcut durum (güncellendi):** Faz 1-12h — tüm katmanların (underlay →
+> **Mevcut durum (güncellendi):** Faz 1-12q — tüm katmanların (underlay →
 > PKI → control plane → guardrail'ler → tenant API → portal) kaynakları
 > YAZILDI ve GERÇEK bir kind cluster'ında (Vault+cert-manager+CNPG+
 > Crossplane+Kyverno+Velero+MinIO) tekrarlanan e2e/chaos/DR tatbikatlarıyla
 > kanıtlandı. **GERÇEK bir bare-metal/üretim cluster'ına HENÜZ hiç
 > uygulanmadı** — bu, bu repo'nun geliştirildiği ortamın yapısal bir
-> sınırıdır (fiziksel donanım/IP havuzu/DNS yok). "Faz 0" ifadesi ESKİYDİ
-> ve bu dosyayla PLATFORM_CONTEXT.md arasındaki bir tutarsızlıktı — düzeltildi.
+> sınırıdır (fiziksel donanım/IP havuzu/DNS yok).
+>
+> **DÜZELTME (bu turda, taze bir denetimde bulundu):** bu satır önceden
+> "Faz 1-12h" diyordu — PLATFORM_CONTEXT.md'nin Faz günlüğü o zamandan bu
+> yana 9 TUR daha ilerlemiş (12i-12q — aralarında Cilium'un TÜM platform
+> egress'ini sessizce kısıtlayan KRİTİK bir default-deny bug'ı, Vault TLS
+> doğrulamasının GERÇEK CA doğrulaması yapmadığı bulgusu, ve Backstage'in
+> allow-all-policy'sinin GERÇEK bir sahiplik-bazlı PermissionPolicy ile
+> değiştirilmesi DAHİL) — bu satır GÜNCELLENMEMİŞTİ, aşağıdaki "10
+> ClusterPolicy / 38/38" satırı da AYNI şekilde bayattı (bkz. madde 5).
 > Güncel, satır satır durum için → [`platform/docs/PLATFORM_CONTEXT.md`](platform/docs/PLATFORM_CONTEXT.md)
 > (bu dosya YALNIZCA özet verir; ayrıntı/kanıt/açık işler için HER ZAMAN
 > PLATFORM_CONTEXT.md'ye bakın).
@@ -80,7 +88,7 @@ için her satır PLATFORM_CONTEXT.md'nin ilgili Faz günlüğüne bağlanır.
 | 2 | ArgoCD + App-of-Apps + Crossplane + Kyverno + ESO + **CNPG**: `./platform/bootstrap/02-control-plane.sh` | ✅ yazıldı, kind'da kanıtlandı (CNPG: Faz 12h, GitOps zincirine yeni bağlandı) |
 | 3 | PKI: `./platform/bootstrap/03-pki.sh` — Vault (HA/Raft) → [init/unseal](platform/docs/runbooks/vault-unseal.md) (insan eylemi) → K8s auth → Root+Intermediate CA → cert-manager → **Vault listener TLS'i (kendi PKI'sinden)** | ✅ yazıldı, kind'da kanıtlandı (TLS adımı: Faz 12g/12h, statik doğrulandı — gerçek bir HTTPS handshake bu ortamda KANITLANMADI) |
 | 4 | Control plane: gözlemlenebilirlik + OpenCost + **Velero**: `./platform/bootstrap/05-observability.sh`, `./platform/bootstrap/06-velero.sh` (+ Harbor/Keycloak Faz 1'de) | ✅ yazıldı; Velero (Faz 12h): OBC→Secret→helm→GERÇEK bir on-demand backup zinciri tasarlandı ama bu ortamda ÇALIŞTIRILMADI |
-| 5 | Kyverno tam guardrail seti — taban hijyeni (01-03, Audit) + Tenant guardrail'leri (04-10, doğrudan Enforce) | ✅ 10 ClusterPolicy yazıldı, `kyverno test` ile 38/38 senaryo doğrulandı |
+| 5 | Kyverno tam guardrail seti — taban hijyeni + Tenant guardrail'leri (`validation/01-10` + `security/01-02`, TÜMÜ Enforce — DÜZELTME: bu satır ÖNCEDEN "10 ClusterPolicy / 38/38" diyordu, BAYATTI, bu turda taze bir denetimde bulunup güncellendi) | ✅ 12 ClusterPolicy yazıldı, `kyverno test` ile 49/49 senaryo doğrulandı (bu turda canlı çalıştırılıp doğrulandı) |
 | 6 | `XTenant`/`XPostgreSQLInstance` XRD/Composition ([`platform/compositions/`](platform/compositions/)) | ✅ yazıldı, `crossplane render` + GERÇEK kind cluster'ında Tenant→Postgres→bağlantı→cert zinciriyle kanıtlandı |
 | 7 | `tenant-requests` reposu (bu repoda İSKELET, bkz. altındaki not) ve CI doğrulaması | ✅ iskelet + ApplicationSet + RBAC/Kyverno claim koruması yazıldı — CANLIYA ALINIRKEN ayrı bir Git reposuna taşınmalı |
 | 8 | Backstage (portal + scaffolder template'i + gerçek tenant-ownership yetkilendirmesi, Faz 12g) | ✅ yazıldı — `tsc --noEmit` ile tip-doğrulandı, GERÇEK bir kullanıcı girişiyle UÇTAN UCA denenmedi |

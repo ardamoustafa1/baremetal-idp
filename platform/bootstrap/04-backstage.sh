@@ -51,6 +51,8 @@ while [[ $# -gt 0 ]]; do
 done
 should_run() { [[ -z "${ONLY}" || "${ONLY}" == "$1" ]]; }
 
+VAULT_TLS_ENABLED="false"
+
 preflight() {
   step "0/4  Ön kontroller"
   for bin in kubectl helm jq curl openssl python3; do
@@ -62,15 +64,40 @@ preflight() {
   [[ -n "${VAULT_TOKEN:-}" ]] || die \
 "VAULT_TOKEN boş. export VAULT_TOKEN=\"<docs/runbooks/vault-unseal.md §3.3'ten>\"
      (yalnızca bu shell oturumunda kalır, hiçbir dosyaya yazılmaz)"
+
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — KRİTİK): `vexec()`
+  # ÖNCEDEN HER ZAMAN sabit `http://127.0.0.1:8200` kullanıyordu — ama Faz 3
+  # (03-pki.sh) `enable_vault_tls()` çalıştıktan SONRA Vault'un TEK
+  # listener'ı (loopback 127.0.0.1 DAHİL, pod içinde AYRI bir plaintext
+  # listener YOK) yalnızca HTTPS dinler. Backstage bootstrap'ı (Faz 8)
+  # TASARIM GEREĞİ Faz 3'ten SONRA çalıştığı için `vexec()` HER ZAMAN
+  # bağlantı reddiyle başarısız oluyordu — Keycloak'ta 'backstage' client'ı
+  # OLUŞTURULUP Vault'a YAZILAMADAN script çöküyor, yarı-yapılandırılmış bir
+  # durum bırakıyordu. ÇÖZÜM: `03-pki.sh`'in KENDİ `vexec()`'İYLE BİREBİR
+  # AYNI desen — `vault-server-tls` Secret'ının VARLIĞI TLS'in etkin
+  # olduğunun sinyali (kubectl/cluster erişimi bu noktada ZATEN doğrulandı).
+  if kubectl -n vault get secret vault-server-tls >/dev/null 2>&1; then
+    VAULT_TLS_ENABLED="true"
+    log "  Vault listener TLS etkin (Secret vault/vault-server-tls mevcut) — vexec() HTTPS kullanacak."
+  else
+    log "  Vault listener TLS henüz etkin DEĞİL — vexec() HTTP kullanacak."
+  fi
+
   ok "Ön kontroller tamam"
 }
 
 vexec() {
+  local addr="http://127.0.0.1:8200" skip_verify=""
+  if [[ "${VAULT_TLS_ENABLED}" == "true" ]]; then
+    addr="https://127.0.0.1:8200"
+    skip_verify='VAULT_SKIP_VERIFY=true; export VAULT_SKIP_VERIFY'
+  fi
   kubectl -n vault exec vault-0 -- sh -c \
-    'VAULT_ADDR=http://127.0.0.1:8200; export VAULT_ADDR
-     VAULT_TOKEN="$1"; export VAULT_TOKEN
+    "VAULT_ADDR=${addr}; export VAULT_ADDR
+     ${skip_verify}
+     VAULT_TOKEN=\"\$1\"; export VAULT_TOKEN
      shift
-     exec vault "$@"' \
+     exec vault \"\$@\"" \
     -- "${VAULT_TOKEN}" "$@"
 }
 
@@ -85,16 +112,40 @@ sync_oidc_secret_to_vault() {
     return 0
   fi
 
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — ORTA): admin parolası
+  # VE bearer token'lar ÖNCEDEN `curl -d "password=..."` / `-H "Authorization:
+  # Bearer ${admin_token}"` ile DOĞRUDAN `kubectl exec` komut ARGV'sine
+  # yazılıyordu — bu, `kubectl exec sts/keycloak -- ps aux` VEYA
+  # `/proc/<pid>/cmdline` erişimi olan HERKESE (VAULT_TOKEN için script'in
+  # ZATEN kaçındığı AYNI sınıf risk) sızıyordu. ÇÖZÜM: hem parola HEM
+  # token'lar artık curl'ün `-K -` (config-from-stdin) özelliğiyle,
+  # `kubectl exec -i`'nin CALLER'DAN pod'a ilettiği bir heredoc İÇİNDE
+  # taşınıyor — argv'de HİÇBİR sır YOK. `/tmp/kc-authrc` (pod içinde,
+  # `sts/keycloak` KALICI bir pod olduğu için — Harbor'un `--rm` pod'larının
+  # AKSİNE) fonksiyonun HEM BAŞINDA (önceki başarısız bir koşudan kalan
+  # dosya varsa) HEM SONUNDA temizlenir.
   local kc_admin_pw client_secret admin_token
   kc_admin_pw="$(kubectl -n keycloak get secret keycloak-admin-password \
                  -o jsonpath='{.data.admin-password}' | base64 -d)"
 
-  admin_token="$(kubectl -n keycloak exec sts/keycloak -- curl -sf \
-    -d "client_id=admin-cli" --data-urlencode "username=${KEYCLOAK_ADMIN_USER}" \
-    --data-urlencode "password=${kc_admin_pw}" -d "grant_type=password" \
-    "http://localhost:8080/realms/master/protocol/openid-connect/token" \
-    | jq -r '.access_token')"
+  kubectl -n keycloak exec sts/keycloak -- rm -f /tmp/kc-authrc 2>/dev/null || true
+
+  admin_token="$(kubectl -n keycloak exec -i sts/keycloak -- curl -sf -K - \
+    "http://localhost:8080/realms/master/protocol/openid-connect/token" <<CURLCONF | jq -r '.access_token'
+data = "client_id=admin-cli"
+data-urlencode = "username=${KEYCLOAK_ADMIN_USER}"
+data-urlencode = "password=${kc_admin_pw}"
+data = "grant_type=password"
+CURLCONF
+)"
   [[ -n "${admin_token}" && "${admin_token}" != "null" ]] || die "Keycloak admin token alınamadı"
+
+  # Bearer token'ı pod-içi bir curl config dosyasına YAZ (argv'de DEĞİL) —
+  # aşağıdaki 4 kimlik-doğrulamalı çağrının hepsi `-K /tmp/kc-authrc`
+  # KULLANIR, token'ı TEKRAR TEKRAR argv'ye koymaz.
+  kubectl -n keycloak exec -i sts/keycloak -- sh -c 'umask 077; cat > /tmp/kc-authrc' <<CURLCONF
+header = "Authorization: Bearer ${admin_token}"
+CURLCONF
 
   # Realm import existing realm'leri güncellemez: client'ı burada idempotent oluştur/güncelle.
   local client_payload
@@ -107,27 +158,25 @@ sync_oidc_secret_to_vault() {
     defaultClientScopes: ["profile", "email", "roles", "groups"]
   }')"
   local client_uuid
-  client_uuid="$(kubectl -n keycloak exec sts/keycloak -- curl -sf \
-    -H "Authorization: Bearer ${admin_token}" \
+  client_uuid="$(kubectl -n keycloak exec sts/keycloak -- curl -sf -K /tmp/kc-authrc \
     "http://localhost:8080/admin/realms/${KEYCLOAK_REALM}/clients?clientId=backstage" \
     | jq -r '.[0].id')"
   if [[ -z "${client_uuid}" || "${client_uuid}" == "null" ]]; then
-    kubectl -n keycloak exec sts/keycloak -- curl -sf -X POST \
-      -H "Authorization: Bearer ${admin_token}" -H 'Content-Type: application/json' \
+    kubectl -n keycloak exec sts/keycloak -- curl -sf -X POST -K /tmp/kc-authrc \
+      -H 'Content-Type: application/json' \
       --data "${client_payload}" "http://localhost:8080/admin/realms/${KEYCLOAK_REALM}/clients"
-    client_uuid="$(kubectl -n keycloak exec sts/keycloak -- curl -sf \
-      -H "Authorization: Bearer ${admin_token}" \
+    client_uuid="$(kubectl -n keycloak exec sts/keycloak -- curl -sf -K /tmp/kc-authrc \
       "http://localhost:8080/admin/realms/${KEYCLOAK_REALM}/clients?clientId=backstage" | jq -er '.[0].id')"
   else
-    kubectl -n keycloak exec sts/keycloak -- curl -sf -X PUT \
-      -H "Authorization: Bearer ${admin_token}" -H 'Content-Type: application/json' \
+    kubectl -n keycloak exec sts/keycloak -- curl -sf -X PUT -K /tmp/kc-authrc \
+      -H 'Content-Type: application/json' \
       --data "${client_payload}" "http://localhost:8080/admin/realms/${KEYCLOAK_REALM}/clients/${client_uuid}"
   fi
 
-  client_secret="$(kubectl -n keycloak exec sts/keycloak -- curl -sf \
-    -H "Authorization: Bearer ${admin_token}" \
+  client_secret="$(kubectl -n keycloak exec sts/keycloak -- curl -sf -K /tmp/kc-authrc \
     "http://localhost:8080/admin/realms/${KEYCLOAK_REALM}/clients/${client_uuid}/client-secret" \
     | jq -r '.value')"
+  kubectl -n keycloak exec sts/keycloak -- rm -f /tmp/kc-authrc 2>/dev/null || true
   [[ -n "${client_secret}" && "${client_secret}" != "null" ]] || die "client secret okunamadı"
 
   vexec kv put -mount=kv platform/backstage/oidc clientSecret="${client_secret}"

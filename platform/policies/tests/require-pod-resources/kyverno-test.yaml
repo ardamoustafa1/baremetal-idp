@@ -25,3 +25,9 @@ results:
       - exempt-system-pod
     kind: Pod
     result: skip
+  - policy: require-pod-resources
+    rule: validate-resources
+    resources:
+      - bad-pod-initcontainer-no-limits
+    kind: Pod
+    result: fail

@@ -5,8 +5,10 @@
 #   Vault kurulumu (plaintext) → [İNSAN: init/unseal, bkz.
 #     docs/runbooks/vault-unseal.md] → Kubernetes auth → PKI (root → 3×
 #     intermediate) → Vault listener TLS (kendi PKI'sinden — Faz 12g) →
-#     cert-manager → ClusterIssuer'lar (HTTPS) → test sertifikası
-#     (uçtan uca doğrulama)
+#     cert-manager → ClusterIssuer'lar (HTTPS) → Keycloak listener TLS
+#     (bu turda eklendi — `certificate.yaml.tpl`'in GERÇEKTEN uygulandığı
+#     adım, `01-underlay.sh`'in Faz 1 kurulumunun ARDINDAN çalışır) →
+#     test sertifikası (uçtan uca doğrulama)
 #
 # TASARIM KURALLARI (01/02 ile aynı + PKI'ye özgü olanlar):
 #   1. IDEMPOTENT.
@@ -34,6 +36,7 @@ UNDERLAY_DIR="${REPO_ROOT}/platform/underlay"
 PKI_DIR="${REPO_ROOT}/platform/pki"
 VAULT_DIR="${PKI_DIR}/vault"
 CERT_MANAGER_DIR="${PKI_DIR}/cert-manager"
+CONTROL_PLANE_DIR="${REPO_ROOT}/platform/control-plane"
 ENV_FILE="${UNDERLAY_DIR}/.env"
 VERSIONS_FILE="${UNDERLAY_DIR}/versions.env"
 
@@ -171,7 +174,7 @@ require_vault_token() {
 # 0. Ön kontroller
 # =============================================================================
 preflight() {
-  step "0/7  Ön kontroller"
+  step "0/8  Ön kontroller"
 
   if (( BASH_VERSINFO[0] < 4 )); then
     die "bash 4+ gerekli (bulunan: ${BASH_VERSION})."
@@ -203,7 +206,7 @@ preflight() {
 # 1. Vault kurulumu (Helm) — init/unseal İNSAN EYLEMİDİR, script yalnızca bekler
 # =============================================================================
 install_vault() {
-  step "1/7  Vault (HA / Raft, 3 replika)"
+  step "1/8  Vault (HA / Raft, 3 replika)"
 
   helm_repo hashicorp "${VAULT_HELM_REPO}"
   helm repo update hashicorp >/dev/null
@@ -362,7 +365,7 @@ verify_vault() {
 # 2. Kubernetes Auth Method
 # =============================================================================
 setup_kubernetes_auth() {
-  step "2/7  Vault Kubernetes Auth Method"
+  step "2/8  Vault Kubernetes Auth Method"
   require_vault_token
 
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -591,7 +594,7 @@ verify_kubernetes_auth() {
 # 3. PKI hiyerarşisi: Root CA → 3× Intermediate CA
 # =============================================================================
 setup_pki() {
-  step "3/7  PKI hiyerarşisi (Root → dev/staging/prod Intermediate)"
+  step "3/8  PKI hiyerarşisi (Root → dev/staging/prod Intermediate)"
   require_vault_token
 
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -734,7 +737,7 @@ verify_pki() {
 # geçer, ayrı bir değişiklik GEREKMEZ.
 # =============================================================================
 enable_vault_tls() {
-  step "4/7  Vault listener TLS (kendi PKI'sinden)"
+  step "4/8  Vault listener TLS (kendi PKI'sinden)"
   require_vault_token
 
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -1017,7 +1020,7 @@ verify_vault_tls() {
 # 5. cert-manager + ClusterIssuer'lar
 # =============================================================================
 install_cert_manager() {
-  step "5/7  cert-manager + Vault-backed ClusterIssuer'lar"
+  step "5/8  cert-manager + Vault-backed ClusterIssuer'lar"
 
   helm_repo jetstack "${CERT_MANAGER_HELM_REPO}"
   helm repo update jetstack >/dev/null
@@ -1095,10 +1098,83 @@ verify_cert_manager() {
 }
 
 # =============================================================================
+# 6. Keycloak TLS — `certificate.yaml.tpl`'in GERÇEKTEN uygulandığı adım.
+#
+# DÜZELTME (bu turda, taze bir denetimde bulundu — KRİTİK): Keycloak'un
+# `values.yaml.tpl`'i (Faz 1, `01-underlay.sh`) HER ZAMAN `tls.enabled: true`
+# + `existingSecret: keycloak-tls` taşıyordu, ama bu Secret'ı üretecek
+# `certificate.yaml.tpl` (Keycloak'un KENDİ dizininde, `01-underlay.sh`'in
+# Faz 1 fonksiyonuna BİLİNÇLİ OLARAK gömülmemiş — kendi başlık yorumunun
+# dediği gibi "Vault PKI'nin ancak Faz 3'te hazır olması" nedeniyle AYRI bir
+# adımla uygulanması gerekiyordu) HİÇBİR script tarafından ASLA uygulanmıyordu.
+# Sonuç: sıfır bir cluster'da Faz 1, var OLMAYAN bir Secret'ı mount etmeye
+# çalışıp `ContainerCreating`'de asılı kalıyor, Harbor/network-policy adımları
+# HİÇ ÇALIŞMIYORDU. Vault'un KENDİ self-TLS deseniyle (values.yaml +
+# values-tls.yaml, bkz. `enable_vault_tls()`) BİREBİR AYNI mantıkla:
+# `01-underlay.sh`'in `install_keycloak()`'ı artık `keycloak-tls` Secret'ı
+# VARSA `values-tls.yaml` overlay'ini EKLİYOR (bu turda AYRICA düzeltildi);
+# BU fonksiyon o Secret'ı GERÇEKTEN üretip Keycloak'ı TLS'e GEÇİREN adımdır.
+#
+# Keycloak'ın Bitnami chart'ı (24.4.7) `updateStrategy.type: RollingUpdate`
+# kullanır (`helm show values bitnami/keycloak --version 24.4.7` ile CANLI
+# doğrulandı) — Vault'un `OnDelete` İSTİSNASININ AKSİNE, bir `helm upgrade`
+# pod'ları KENDİLİĞİNDEN yeniden başlatır; elle sıralı pod silme GEREKMEZ.
+# =============================================================================
+enable_keycloak_tls() {
+  step "6/8  Keycloak listener TLS (Vault PKI üzerinden)"
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log "[dry-run] keycloak/certificate.yaml.tpl uygulanacak, Secret beklenecek, helm upgrade (TLS overlay) çalıştırılacaktı"
+    return 0
+  fi
+
+  kubectl get clusterissuer vault-issuer-dev >/dev/null 2>&1 \
+    || die "ClusterIssuer 'vault-issuer-dev' yok — önce 'install_cert_manager' (03-pki.sh --only cert-manager) çalıştırılmalı."
+
+  local kc_dir="${CONTROL_PLANE_DIR}/keycloak"
+  mkdir -p "${kc_dir}/rendered"
+  envsubst '${KEYCLOAK_HOSTNAME}' \
+    < "${kc_dir}/certificate.yaml.tpl" \
+    > "${kc_dir}/rendered/certificate.yaml"
+  kubectl apply -f "${kc_dir}/rendered/certificate.yaml"
+
+  wait_for "Certificate keycloak-tls Ready" 180 10 \
+    bash -c "kubectl -n keycloak get certificate keycloak-tls -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' 2>/dev/null | grep -q True"
+  wait_for "Secret keycloak/keycloak-tls hazır" 60 5 \
+    kubectl -n keycloak get secret keycloak-tls
+
+  envsubst '${KEYCLOAK_HOSTNAME}' \
+    < "${kc_dir}/values.yaml.tpl" \
+    > "${kc_dir}/values.rendered.yaml"
+  envsubst < "${kc_dir}/values-tls.yaml.tpl" \
+    > "${kc_dir}/values-tls.rendered.yaml"
+
+  helm upgrade --install keycloak bitnami/keycloak \
+    --namespace keycloak --version "${KEYCLOAK_CHART_VERSION}" \
+    -f "${kc_dir}/values.rendered.yaml" \
+    -f "${kc_dir}/values-tls.rendered.yaml" \
+    --wait --timeout 15m
+
+  wait_for "Keycloak StatefulSet (TLS sonrası)" 300 10 \
+    kubectl -n keycloak rollout status statefulset/keycloak --timeout=5s
+
+  verify_keycloak_tls
+}
+
+verify_keycloak_tls() {
+  log "DOĞRULAMA: Keycloak listener TLS"
+  kubectl -n keycloak get secret keycloak-tls >/dev/null 2>&1 \
+    || die "Secret keycloak/keycloak-tls yok — enable_keycloak_tls() çalıştırılmadı mı?"
+  wait_for "Keycloak HTTPS üzerinden yanıt veriyor" 120 10 \
+    bash -c "kubectl -n keycloak exec keycloak-0 -- curl -sfk https://127.0.0.1:8443/realms/${KEYCLOAK_REALM}/.well-known/openid-configuration >/dev/null"
+  ok "Keycloak listener TLS etkin (HTTPS, vault-issuer-dev'den imzalı)"
+}
+
+# =============================================================================
 # 5. Uçtan uca test: örnek Certificate → Vault üzerinden imzalanmış mı?
 # =============================================================================
 verify_certificate() {
-  step "6/7  Uçtan uca sertifika testi"
+  step "7/8  Uçtan uca sertifika testi"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log "[dry-run] test sertifikası uygulanıp doğrulanacaktı"
@@ -1217,6 +1293,7 @@ main() {
     should_run pki          && verify_pki                 || true
     should_run vault-tls    && verify_vault_tls            || true
     should_run cert-manager && verify_cert_manager        || true
+    should_run keycloak-tls && verify_keycloak_tls         || true
     summary
     return 0
   fi
@@ -1226,6 +1303,7 @@ main() {
   should_run pki          && setup_pki
   should_run vault-tls    && enable_vault_tls
   should_run cert-manager && install_cert_manager
+  should_run keycloak-tls && enable_keycloak_tls
   should_run cert-test    && verify_certificate
 
   summary

@@ -45,12 +45,28 @@ spec:
                 - kube-system
                 - kube-node-lease
                 - kube-public
+      # DÜZELTME (bu turda, taze bir denetimde bulundu): `02-disallow-
+      # privileged-hostnetwork.yaml`'daki AYNI sınıf eksiklik — yalnızca
+      # `spec.containers` kontrol ediliyordu, `spec.initContainers`
+      # kaynak sınırı OLMADAN geçebiliyordu (LimitRange varsayılanları
+      # KISMEN telafi eder ama bu politikanın KENDİSİ "her container"
+      # dediği için initContainers'ı da kapsamalı).
       validate:
         message: >-
-          Her container'da cpu/memory requests VE limits zorunludur
-          (conventions.md §4 — tier tabanlı kaynak profilleri).
+          Her container'da (initContainers DAHİL) cpu/memory requests VE
+          limits zorunludur (conventions.md §4 — tier tabanlı kaynak
+          profilleri).
         foreach:
           - list: "request.object.spec.containers"
+            pattern:
+              resources:
+                requests:
+                  memory: "?*"
+                  cpu: "?*"
+                limits:
+                  memory: "?*"
+                  cpu: "?*"
+          - list: "request.object.spec.initContainers || `[]`"
             pattern:
               resources:
                 requests:
