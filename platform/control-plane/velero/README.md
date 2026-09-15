@@ -78,10 +78,39 @@ uç nokta yazmamak içindir, "gerekli değil" anlamına GELMEZ.
   parse ile DOĞRULANDI — ama canlı bir Ceph RGW/offsite S3 çiftine karşı
   ÇALIŞTIRILMADI).
 - Kaynak Ceph kullanılamazken (yalnızca offsite hedeften) bir Postgres
-  restore denemesi — `compositions/postgresql/README.md`'nin "Restore"
-  bölümündeki `externalClusters.barmanObjectStore` bloğu, `endpointURL`'i
-  offsite S3'e çevirerek TEORİK OLARAK bu senaryoda da çalışmalıdır (aynı
-  Barman format'ı, farklı bir S3 uç noktası) ama bu HİÇ denenmedi.
+  restore denemesi — `compositions/postgresql/README.md`'nin YENİ "Offsite'tan
+  restore — CANLIYA GEÇMEDEN ÖNCE ZORUNLU" bölümü (code review #9) TAM bir
+  prosedür + kabul kriterleri (veri bütünlüğü, PITR, ÖLÇÜLEN RPO/RTO)
+  yazdı — ama bu HİÇ ÇALIŞTIRILMADI (gerçek Ceph/offsite S3 yok).
+- **DÜZELTME (code review #5, KRİTİK):** offsite-sync CronJob'u ÖNCEDEN
+  `rclone sync` kullanıyordu — bu, hedefi kaynakla BİREBİR eşitler (kaynakta
+  OLMAYAN nesneleri hedeften SİLER). Kaynak bucket YANLIŞLIKLA silinirse,
+  BİR SONRAKİ günlük çalıştırma offsite'taki yedekleri de silerdi — "bağımsız
+  bir ikinci kopya" tasarımının TEMEL AMACINI ihlal ediyordu. `rclone copy`'ye
+  geçirildi (yalnızca EKLER, hedeften HİÇBİR ŞEY SİLMEZ) + boş-kaynak/dolu-hedef
+  durumunda Job'u AÇIKÇA başarısız sayan bir koruma eklendi. Offsite artık
+  YALNIZCA BİRİKİR (disk kullanımı zamanla artar — bilinçli maliyet/güvenlik
+  ödünleşimi) — GERÇEK bir Ceph/S3'e karşı canlı test EDİLEMEDİ.
+- **DÜZELTME (code review #6, YÜKSEK):** `offsite-sync-discovery`
+  ServiceAccount'ının küme-geneli `secrets: get` yetkisi (ele geçirilirse
+  ADI BİLİNEN HER namespace'in HER Secret'ını okuyabilirdi) KALDIRILDI —
+  `compositions/postgresql/function.k` artık HER Postgres instance'ı KENDİ
+  namespace'inde, discovery SA'sına `resourceNames` ile TEK BİR Secret'a
+  (o instance'ın KENDİ backup Secret'ı) SINIRLI bir Role/RoleBinding
+  oluşturuyor.
+- **DÜZELTME (code review #7, YÜKSEK):** discovery script'i ÖNCEDEN OBC
+  listeleme HATASINI (`kubectl get ... || true`) "sıfır kaynak var" ile
+  AYNI şekilde yorumluyordu — bir API/RBAC arızası SESSİZCE "başarılı,
+  yedeklenecek veritabanı yok" görünebilirdi. Artık kubectl'in KENDİ exit
+  kodu ayrı yakalanıyor (hata → Job FAIL) ve atlanan HER secret-okuma
+  hatası SAYILIYOR (en az bir atlama varsa Job SONUNDA FAIL).
+- **DÜZELTME (code review #8, YÜKSEK):** `offsite-sync` namespace'i
+  `DEFAULT_DENY_EXEMPT_NAMESPACES`'te (`.env.example`) HİÇ YOKTU —
+  `ENABLE_DEFAULT_DENY=true` olduğunda discovery'nin K8s API'ye, sync'in
+  Ceph RGW'ye/offsite S3'e giden trafiği SESSİZCE KESİLİRDİ. Eklendi —
+  velero/cnpg-system gibi diğer platform namespace'leriyle AYNI (GENİŞ,
+  teknik borç #3'e bilinçli olarak bırakılmış) istisna deseninde; DAR,
+  yalnızca gereken hedeflere özel bir CiliumNetworkPolicy YAZILMADI.
 - Backup smoke test'in (`run_backup_smoke_test()`) Faz 12m'de kesin faz
   eşitliği + hata sayısı kontrolüne güçlendirilmesi CANLI test edildi
   (bkz. Faz 12m günlüğü) AMA test hâlâ yalnızca Velero'nun KENDİ namespace'inin

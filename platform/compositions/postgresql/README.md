@@ -118,6 +118,52 @@ bu görevde GERÇEK bir cluster'a karşı UÇTAN UCA ÇALIŞTIRILMADI (bkz.
 `platform/control-plane/velero/README.md`'nin RPO/RTO tablosundaki "ÖLÇÜLMEDİ"
 notu). İlk üretim kullanımından ÖNCE bir tenant'ta gerçekten denenmeli.
 
+## Offsite'tan restore — CANLIYA GEÇMEDEN ÖNCE ZORUNLU (code review #9)
+
+Yukarıdaki prosedür yalnızca BİRİNCİL kaynağı (Ceph RGW) test eder.
+`rclone check` (offsite-sync'in KENDİ doğrulaması, bkz. `velero/README.md`)
+YALNIZCA iki taraftaki NESNELERİN eşit olduğunu kanıtlar — PostgreSQL'in o
+base backup + WAL zincirinden GERÇEKTEN AÇILABİLDİĞİNİ KANITLAMAZ. Ayrıca
+günlük 04:00 aktarımı SÜREKLİ bir WAL koruması DEĞİLDİR — son başarılı
+aktarımdan SONRA üretilen veri, tam bir küme kaybında KAYBEDİLEBİLİR (bkz.
+aşağıdaki RPO notu). Bu ikisi CANLIYA GEÇMEDEN ÖNCE, GERÇEK bir kümede
+(bu görevde YAPILAMADI — gerçek Ceph/offsite S3 yok) ayrı ayrı KANITLANMALI:
+
+```bash
+# 1. Ceph RGW'ye erişimi GEÇİCİ olarak KESİN (yalnızca test amaçlı — örn.
+#    bir NetworkPolicy ile rook-ceph-rgw Service'ini test namespace'inden
+#    izole edin, RGW'nin KENDİSİNİ DURDURMAYIN — diğer tenant'ları etkiler).
+
+# 2. YUKARIDAKİ "Restore / PITR" prosedürünün AYNISINI, TEK farkla:
+#    externalClusters.barmanObjectStore.endpointURL Ceph RGW YERİNE
+#    GERÇEK offsite S3 endpoint'ine (VELERO_OFFSITE_S3_URL) işaret etmeli,
+#    s3Credentials DE offsite kimlik bilgilerine (DST_ACCESS_KEY/
+#    DST_SECRET_KEY, bkz. `<job-adı>-creds` Secret'ı, `offsite-sync`
+#    namespace'i) işaret etmelidir — kaynak Ceph'ten DEĞİL, YALNIZCA
+#    offsite'tan restore edildiğini KANITLAMAK için.
+
+# 3. Kabul kriterleri (kullanıcının KENDİ talebi, code review #9):
+#    a) Yeni Cluster Ready olur (Ceph RGW'ye HİÇ erişim OLMADAN).
+#    b) PostgreSQL GERÇEKTEN açılır (yukarıdaki `psql` sorgusu ÇALIŞIR).
+#    c) BEKLENEN kayıtlar bulunur (test öncesi bilinen bir satır sayısı/
+#       değer ile karşılaştırılır — yalnızca "Cluster Ready" YETERLİ DEĞİL).
+#    d) Belirli bir ZAMANA geri dönüş (PITR) çalışır:
+#       `bootstrap.recovery.recoveryTarget.targetTime: "<ISO8601>"` ile
+#       test edilmeli — yalnızca "en son" DEĞİL, GEÇMİŞTE bir ANA dönmek.
+#    e) Veri kaybı (RPO) ve geri dönüş süresi (RTO) ÖLÇÜLÜR: test öncesi
+#       bilinen bir yazma zaman damgası ile restore SONRASI en son GÖRÜNEN
+#       kayıt arasındaki fark = GERÇEK RPO; adım 2'nin BAŞLANGICINDAN
+#       Cluster Ready olana kadar geçen süre = GERÇEK RTO. Bu iki sayı
+#       `velero/README.md`'nin RPO/RTO tablosundaki "ÖLÇÜLMEDİ" notunun
+#       YERİNE GEÇMELİDİR.
+
+# 4. Test SONRASI: test Cluster'ını silin, Ceph RGW erişimini GERİ AÇIN.
+```
+
+**Genel PVC içerikleri (Postgres DIŞI) için ayrı bir veri yedekleme yolu
+HÂLÂ yok** — bkz. `PLATFORM_CONTEXT.md` teknik borç #42 (Faz 12m'de
+işaretlendi, bu turda TEKRAR doğrulandı — henüz KAPATILMADI).
+
 ## Test etme
 
 ```bash

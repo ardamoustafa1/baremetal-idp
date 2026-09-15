@@ -180,6 +180,66 @@ spec:
                 }
             }
 
+            # --- offsite-sync-discovery'nin BU tenant'ın backup Secret'ını okuyabilmesi
+            # için DAR kapsamlı Role/RoleBinding (code review #6'nın çözümü) ---------
+            #
+            # ÖNCEDEN `06-velero.sh`'in offsite-sync-discovery ClusterRole'ü KÜME
+            # GENELİNDE `secrets: get` veriyordu — bu ServiceAccount/pod ele geçirilirse
+            # YALNIZCA postgres backup Secret'ları DEĞİL, ADI BİLİNEN/TAHMİN EDİLEN HER
+            # namespace'teki HER Secret okunabilirdi (K8s RBAC, "yalnızca postgres
+            # backup OBC'lerinin Secret'ları" gibi İÇERİK-bazlı bir kısıtı statik olarak
+            # İFADE EDEMEZ). Bu composition ZATEN `${name}-backup` Secret'ını (Rook'un
+            # OBC'den ÜRETTİĞİ) bu tenant'ın KENDİ namespace'inde (tenantRef)
+            # oluşturuyor — composition'ın kendi namespace'i içinde bir Role/RoleBinding
+            # oluşturması GÜVENLİ, sıradan bir yetkidir (Crossplane zaten bu namespace'i
+            # KENDİSİ yönetiyor). Bu ROL, offsite-sync-discovery ServiceAccount'ına
+            # YALNIZCA `resourceNames: ["${name}-backup"]` — yani TAM OLARAK bu
+            # instance'ın backup Secret'ı — için `get` verir; başka HİÇBİR Secret'a
+            # (aynı namespace'teki DİĞER Secret'lar DAHİL) erişim SAĞLAMAZ. Küme
+            # genelindeki `secrets: get` yetkisi `06-velero.sh`'ten KALDIRILDI (bkz. o
+            # dosyanın ClusterRole yorumu).
+            offsiteDiscoveryRole = {
+                apiVersion = "rbac.authorization.k8s.io/v1"
+                kind = "Role"
+                metadata = {
+                    name = "offsite-sync-discovery-${name}"
+                    namespace = tenantRef
+                    annotations = _resAnno("offsite-discovery-role")
+                    labels = labels
+                }
+                rules = [
+                    {
+                        apiGroups = [""]
+                        resources = ["secrets"]
+                        resourceNames = ["${name}-backup"]
+                        verbs = ["get"]
+                    }
+                ]
+            }
+
+            offsiteDiscoveryRoleBinding = {
+                apiVersion = "rbac.authorization.k8s.io/v1"
+                kind = "RoleBinding"
+                metadata = {
+                    name = "offsite-sync-discovery-${name}"
+                    namespace = tenantRef
+                    annotations = _resAnno("offsite-discovery-rolebinding")
+                    labels = labels
+                }
+                subjects = [
+                    {
+                        kind = "ServiceAccount"
+                        name = "offsite-sync-discovery"
+                        namespace = "offsite-sync"
+                    }
+                ]
+                roleRef = {
+                    kind = "Role"
+                    name = "offsite-sync-discovery-${name}"
+                    apiGroup = "rbac.authorization.k8s.io"
+                }
+            }
+
             # =============================================================================
             # 2. cert-manager Certificate — tenant'ın KENDİ Issuer'ından (Faz 6)
             #
@@ -666,6 +726,8 @@ spec:
 
             items = [
                 backupBucket
+                offsiteDiscoveryRole
+                offsiteDiscoveryRoleBinding
                 certificate
                 cluster
                 scheduledBackup

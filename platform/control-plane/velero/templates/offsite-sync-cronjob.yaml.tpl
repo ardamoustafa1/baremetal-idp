@@ -27,6 +27,29 @@
 # varsayılanı + AŞAĞIDAKİ AÇIK `rclone mkdir` adımı ile) #7'yi (hedef
 # bucket'ın VAR OLMASI/OLUŞTURULMASI) çözer. `emptyDir`/`/staging` TAMAMEN
 # KALDIRILDI.
+#
+# DÜZELTME (code review #5, KRİTİK — bu turda keşfedildi): `rclone sync`
+# hedefi KAYNAKLA BİREBİR EŞİTLER — kaynakta OLMAYAN her nesneyi hedeften
+# SİLER (bkz. https://rclone.org/commands/rclone_sync/, "Deletes any
+# files that exist in dest but not in src"). Bu, "bağımsız, offsite bir
+# ikinci kopya" tasarımının TEMEL AMACINI (kaynak KAZAYLA silinirse
+# offsite'ta GERİ DÖNÜŞ NOKTASI kalması) DOĞRUDAN İHLAL EDER: kaynak
+# bucket YANLIŞLIKLA boşaltılırsa (silme, bucket'ın KENDİSİNİ SİLMEZ —
+# `rclone lsd` erişim kontrolü BAŞARILI olmaya DEVAM EDER), BİR SONRAKİ
+# günlük çalıştırma offsite'taki TÜM nesneleri de SİLER — "offsite yedek"
+# artık kaynaktaki bir kazaya karşı HİÇBİR koruma SAĞLAMAZ, yalnızca onu
+# GECİKMELİ olarak TEKRARLAR. ÇÖZÜM: `rclone sync` → `rclone copy` (yeni/
+# değişen nesneleri kopyalar, hedefte kaynakta OLMAYAN nesnelere HİÇ
+# DOKUNMAZ — bkz. https://rclone.org/commands/rclone_copy/, "Doesn't
+# transfer files that are identical on source and destination... doesn't
+# delete files from destination"). Offsite artık YALNIZCA BİRİKEN bir
+# kopyadır (disk kullanımı zamanla ARTAR — bilinçli bir maliyet/güvenlik
+# ödünleşimi, bkz. aşağıdaki "boş kaynak koruması" notu ve
+# `velero/README.md`). AYRICA: kaynak bucket TAMAMEN BOŞKEN (0 nesne) ama
+# hedefte ZATEN nesne VARSA, bu KENDİ BAŞINA şüpheli bir durumdur (WAL
+# arşivleme BOZULMUŞ veya kaynak YANLIŞLIKLA boşaltılmış olabilir) — aşağıda
+# `rclone size` ile AÇIKÇA kontrol edilip Job BAŞARISIZ sayılır (sessizce
+# "kopyalanacak bir şey yok" diyip başarıyla ÇIKMAK yerine).
 # =============================================================================
 apiVersion: batch/v1
 kind: CronJob
@@ -88,20 +111,49 @@ spec:
                   echo "[offsite-sync] ${BUCKET_NAME}: hedef bucket hazırlanıyor..."
                   rclone mkdir "offsite:${BUCKET_NAME}"
 
-                  # --- Doğrudan uzaktan-uzağa senkron — YEREL staging YOK
-                  # (code review #5). --checksum: değişen içerik boyut+mtime
+                  # --- Boş-kaynak koruması (code review #5): kaynak bucket
+                  # SIFIR nesne içeriyorsa AMA hedefte ZATEN nesne varsa, bu
+                  # muhtemelen WAL arşivlemenin BOZULDUĞUNU veya kaynağın
+                  # YANLIŞLIKLA boşaltıldığını gösterir — `rclone copy` bu
+                  # durumda hedefe DOKUNMAZ (silme YAPMAZ, bkz. yukarıdaki
+                  # başlık notu) ama YİNE DE bunu SESSİZCE "başarılı, 0 nesne
+                  # kopyalandı" diye geçmek YANLIŞ bir güven verir — bu yüzden
+                  # AÇIKÇA Job'u BAŞARISIZ SAYIP alarm üretiyoruz.
+                  # NOT (dürüstçe işaretli): `rclone size --json`'ın
+                  # `{"count":N,...}` biçimi rclone'un belgelenmiş, kararlı
+                  # çıktı şemasıdır — ama bu ortamda GERÇEK bir rclone
+                  # binary'sine karşı CANLI DOĞRULANMADI (bu sandbox'ta
+                  # rclone kurulu değil). İlk gerçek çalıştırmada
+                  # doğrulanmalı.
+                  src_count="$(rclone size "ceph:${BUCKET_NAME}" --json | grep -o '"count":[0-9]*' | cut -d: -f2)"
+                  dst_count="$(rclone size "offsite:${BUCKET_NAME}" --json | grep -o '"count":[0-9]*' | cut -d: -f2)"
+                  echo "[offsite-sync] ${BUCKET_NAME}: kaynak nesne sayısı=${src_count:-0}, hedef nesne sayısı=${dst_count:-0}"
+                  if [ "${src_count:-0}" -eq 0 ] && [ "${dst_count:-0}" -gt 0 ]; then
+                    echo "[offsite-sync] HATA: ${BUCKET_NAME} kaynağı BOŞ (0 nesne) ama offsite hedefte ${dst_count} nesne VAR — WAL arşivleme bozulmuş veya kaynak yanlışlıkla boşaltılmış olabilir. Kopyalama İPTAL, elle inceleyin." >&2
+                    exit 1
+                  fi
+
+                  # --- Doğrudan uzaktan-uzağa KOPYALAMA (SENKRON DEĞİL —
+                  # code review #5, yukarıdaki başlık notuna bakın) — YEREL
+                  # staging YOK. `rclone copy`, kaynakta ARTIK OLMAYAN
+                  # nesnelere hedefte HİÇ DOKUNMAZ (silme YAPMAZ) — offsite
+                  # yalnızca BİRİKİR, kaynaktaki kazara bir silme offsite'a
+                  # ASLA YAYILMAZ. --checksum: değişen içerik boyut+mtime
                   # yerine GERÇEK checksum ile tespit edilir (Barman'ın WAL
                   # dosyaları için daha güvenilir — mtime'lar RGW'nin KENDİ
                   # üretim zamanına göre değişebilir).
-                  echo "[offsite-sync] ${BUCKET_NAME}: Ceph RGW → offsite doğrudan senkronizasyon..."
-                  rclone sync "ceph:${BUCKET_NAME}" "offsite:${BUCKET_NAME}" --checksum --stats-one-line -v
+                  echo "[offsite-sync] ${BUCKET_NAME}: Ceph RGW → offsite doğrudan kopyalama (yalnızca EKLEME, SİLME YOK)..."
+                  rclone copy "ceph:${BUCKET_NAME}" "offsite:${BUCKET_NAME}" --checksum --stats-one-line -v
 
                   # --- Başarı kapısı (code review #9'un "ilk gerçek
-                  # aktarımın başarı kapısı" talebiyle AYNI ruhta): sync
-                  # sonrası İKİ TARAF GERÇEKTEN eşit mi diye BAĞIMSIZ bir
-                  # doğrulama — yalnızca `rclone sync`'in exit code'una
-                  # GÜVENMEK yerine.
-                  echo "[offsite-sync] ${BUCKET_NAME}: sync sonrası doğrulama (rclone check)..."
+                  # aktarımın başarı kapısı" talebiyle AYNI ruhta): kopyalama
+                  # sonrası kaynaktaki HER nesnenin hedefte GERÇEKTEN VAR
+                  # olduğunu BAĞIMSIZ doğrular — yalnızca `rclone copy`'nin
+                  # exit code'una GÜVENMEK yerine. `--one-way`: yalnızca
+                  # kaynak→hedef eksiklikleri kontrol eder (hedefte kaynakta
+                  # OLMAYAN eski nesnelerin varlığı — `copy`'nin BEKLENEN,
+                  # BİRİKEN davranışı — bir HATA SAYILMAZ).
+                  echo "[offsite-sync] ${BUCKET_NAME}: kopyalama sonrası doğrulama (rclone check)..."
                   rclone check "ceph:${BUCKET_NAME}" "offsite:${BUCKET_NAME}" --one-way
                   echo "[offsite-sync] ${BUCKET_NAME}: tamamlandı ve doğrulandı."
               env:

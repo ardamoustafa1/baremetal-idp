@@ -421,12 +421,24 @@ setup_postgres_offsite_sync() {
 # bir CronJob küme İÇİNE kuruluyor — insan hafızasına bağımlı MANUEL bir
 # adım, kendi kendini periyodik olarak TEKRARLAYAN bir mekanizmaya dönüşüyor.
 #
-# GÜVENLİK NOTU (dürüstçe işaretli): bu CronJob'un ServiceAccount'ı
-# `secrets` kaynağını KÜME GENELİNDE `get` edebilmelidir — RBAC, "yalnızca
-# postgres backup OBC'lerinin secret'ları" gibi İÇERİK-tabanlı bir kısıtı
-# İFADE EDEMEZ (yalnızca kaynak TÜRÜ/ad kalıbı, ad kalıbı da RBAC'ta YOK).
-# Bu GERÇEK, kabul edilen bir blast-radius artışıdır — YAZMA yetkisi
-# YALNIZCA `offsite-sync` namespace'iyle SINIRLI (cluster-wide DEĞİL).
+# DÜZELTME (code review #6, YÜKSEK — güvenlik kapsamı): bu CronJob'un
+# ServiceAccount'ı ÖNCEDEN `secrets` kaynağını KÜME GENELİNDE `get`
+# edebiliyordu — bu ServiceAccount/pod ele geçirilirse YALNIZCA postgres
+# backup Secret'ları DEĞİL, ADI BİLİNEN/TAHMİN EDİLEN HER namespace'teki
+# HER Secret (örn. `vault-server-tls`, `backstage-oidc-client-secret`)
+# okunabilirdi. ÇÖZÜM: küme geneli `secrets: get` TAMAMEN KALDIRILDI —
+# `compositions/postgresql/function.k`'ye YENİ bir composed kaynak
+# (`offsiteDiscoveryRole`/`offsiteDiscoveryRoleBinding`) eklendi: HER
+# Postgres instance'ı KENDİ namespace'inde, offsite-sync-discovery
+# ServiceAccount'ına `resourceNames: ["<name>-backup"]` ile SINIRLI (TAM
+# OLARAK o instance'ın backup Secret'ı, BAŞKA HİÇBİR Secret DEĞİL) bir
+# Role/RoleBinding oluşturur. Composition zaten KENDİ ürettiği namespace'te
+# yetkiliDİR (Crossplane'in KENDİ yönettiği kaynak) — bu, K8s RBAC'ın
+# statik doğasıyla mümkün olan EN DAR kapsam (içerik-bazlı, "yalnızca
+# postgres backup'ları" gibi bir kısıt RBAC'ta İFADE EDİLEMEZ, ama
+# "yalnızca BU tek, isimle sabitlenmiş Secret" İFADE EDİLEBİLİR ve
+# EDİLDİ). YAZMA yetkisi HÂLÂ yalnızca `offsite-sync` namespace'iyle
+# SINIRLI (cluster-wide DEĞİL, değişmedi).
 # =============================================================================
 setup_offsite_sync_discovery_cronjob() {
   step "5/5  offsite-sync-discovery CronJob'u (saatlik otomatik keşif)"
@@ -443,8 +455,12 @@ setup_offsite_sync_discovery_cronjob() {
 
   kubectl create namespace offsite-sync --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-  # --- RBAC: okuma küme-geneli (bkz. yukarıdaki GÜVENLİK NOTU), yazma
-  # yalnızca offsite-sync namespace'i ile SINIRLI.
+  # --- RBAC: OBC keşfi küme-geneli (içerik SIR DEĞİL — yalnızca bucket
+  # adı/namespace listelenir), yazma yalnızca offsite-sync namespace'i ile
+  # SINIRLI. `secrets: get` KÜME GENELİNDEN KALDIRILDI (code review #6) —
+  # her tenant'ın KENDİ backup Secret'ına erişim artık `compositions/
+  # postgresql/function.k`'nin ürettiği namespace-özel Role/RoleBinding
+  # ile veriliyor (bkz. yukarıdaki DÜZELTME notu).
   cat <<EOF | kubectl apply -f - >/dev/null
 apiVersion: v1
 kind: ServiceAccount
@@ -460,9 +476,6 @@ rules:
   - apiGroups: ["objectbucket.io"]
     resources: ["objectbucketclaims"]
     verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -517,23 +530,46 @@ EOF
   cat > "${work}/discover.sh" <<'DISCOVER_EOF'
 #!/bin/sh
 set -eu
+# DÜZELTME (code review #7, YÜKSEK): bu script ÖNCEDEN `kubectl get ... ||
+# true` ile OBC listeleme HATASINI YUTUYORDU — API/RBAC sorunu YÜZÜNDEN
+# kubectl BAŞARISIZ olduğunda `/tmp/obcs.txt` BOŞ kalır, script bunu
+# "hiçbir postgres backup OBC'si YOK" (exit 0, BAŞARILI) ile AYNI şekilde
+# yorumlardı — yani bir API/RBAC arızası, discovery'nin BAŞARIYLA
+# ÇALIŞTIĞI ama basitçe "yedeklenecek veritabanı yok" sanılan bir duruma
+# tamamen ÖZDEŞ görünürdü. Artık kubectl'in KENDİ exit kodu AYRI YAKALANIR
+# — "gerçekten sıfır kaynak var" (kubectl BAŞARILI, çıktı boş) ile
+# "kaynakları OKUYAMADIM" (kubectl BAŞARISIZ) İKİ FARKLI, birbirinden
+# AYRIŞTIRILABİLİR sonuçtur.
 echo "[discovery] postgres backup OBC'leri taranıyor..."
-kubectl get objectbucketclaim --all-namespaces \
+if ! kubectl get objectbucketclaim --all-namespaces \
   -l platform.internal/component=postgresql \
   -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.bucketName}{"\n"}{end}' \
-  > /tmp/obcs.txt || true
+  > /tmp/obcs.txt; then
+  echo "[discovery] HATA: OBC listelemesi BAŞARISIZ (kubectl exit != 0) — bu API/RBAC arızası OLABİLİR, 'hiçbir OBC yok' İLE KARIŞTIRILMAMALI. Job BAŞARISIZ SAYILIYOR." >&2
+  exit 1
+fi
 
 if [ ! -s /tmp/obcs.txt ]; then
-  echo "[discovery] hiçbir postgres backup OBC'si bulunamadı."
+  echo "[discovery] kubectl BAŞARIYLA çalıştı ve GERÇEKTEN sıfır postgres backup OBC'si döndürdü (yeni kurulum/henüz hiç tenant yok VARSAYIMI)."
   exit 0
 fi
 
+# DÜZELTME (code review #7): bir Secret okunamadığında yalnızca o veritabanı
+# ATLANIP script SESSİZCE "başarılı" (exit 0) çıkardı — bir RBAC/erişim
+# regresyonu (örn. #6'nın YENİ namespace-özel Role'ü BEKLENMEDİK şekilde
+# eksikse) discovery'yi "çalışıyor ama yeni veritabanları eklenmiyor" gibi
+# SESSİZCE bozardı. Artık atlanan HER veritabanı SAYILIR; en az bir atlama
+# varsa script SONUNDA BAŞARISIZ SAYILIR (aşağıya bakın) — CronJob'un
+# `failedJobsHistoryLimit`i ve gelecekteki bir alerting entegrasyonu bunu
+# GÖRÜNÜR kılar.
+skipped_count=0
 while read -r ns obc_name bucket_name; do
   [ -z "${ns:-}" ] && continue
   key="$(kubectl -n "${ns}" get secret "${obc_name}" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d || true)"
   secret="$(kubectl -n "${ns}" get secret "${obc_name}" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d || true)"
   if [ -z "${key}" ] || [ -z "${secret}" ]; then
-    echo "[discovery] ${ns}/${obc_name}: kimlik bilgisi okunamadı, atlanıyor"
+    echo "[discovery] UYARI: ${ns}/${obc_name}: kimlik bilgisi OKUNAMADI (RBAC/eksik Secret olabilir), ATLANIYOR — bu veritabanı offsite koruması ALMAYACAK." >&2
+    skipped_count=$((skipped_count + 1))
     continue
   fi
 
@@ -553,6 +589,12 @@ while read -r ns obc_name bucket_name; do
 
   echo "[discovery] offsite sync CronJob: ${job_name} (bucket: ${bucket_name}, kaynak ns: ${ns})"
 done < /tmp/obcs.txt
+
+if [ "${skipped_count}" -gt 0 ]; then
+  echo "[discovery] HATA: ${skipped_count} veritabanının kimlik bilgisi okunamadı — bu veritabanları offsite koruması ALMADI. Job BAŞARISIZ SAYILIYOR (bkz. yukarıdaki UYARI satırları)." >&2
+  exit 1
+fi
+echo "[discovery] tamamlandı — atlanan veritabanı yok."
 DISCOVER_EOF
 
   kubectl -n offsite-sync create configmap offsite-sync-discovery \
