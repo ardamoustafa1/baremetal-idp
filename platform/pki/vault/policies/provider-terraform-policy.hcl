@@ -24,8 +24,8 @@ path "sys/policies/acl/tenant-*" {
 
 # DÜZELTME (Faz 12b, GERÇEK kind cluster'ında keşfedildi): ESO'nun tenant
 # başına kimliği (compositions/tenant/function.k, "eso_tenant" kaynakları)
-# "eso-tenant-<teamName>" adını kullanıyor — bu, "tenant-*" glob'una UYMUYOR
-# ("eso-tenant-acme" harfi harfine "tenant-" ile BAŞLAMIYOR). Bu satırlar
+# "eso-tenant-<nsName>" adını kullanıyor — bu, "tenant-*" glob'una UYMUYOR
+# ("eso-tenant-..." harfi harfine "tenant-" ile BAŞLAMIYOR). Bu satırlar
 # olmadan provider-terraform kimliği (doğru auth olsa BİLE) "permission
 # denied" alırdı — canlı bir token ile doğrulandı.
 path "auth/kubernetes/role/eso-tenant-*" {

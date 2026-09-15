@@ -437,6 +437,34 @@ EOF
     warn "  provider-terraform SA'sı bulunamadı (Faz 2 kurulu değil olabilir) — role atlandı"
   fi
 
+  # --- vault-tenant-bootstrap rolü: XTenant composition'ının native Job'u
+  # (compositions/tenant/function.k, `vaultBootstrapJob`) için.
+  #
+  # DÜZELTME (kod incelemesinde bulundu, GERÇEK bir bootstrap boşluğu):
+  # Faz 12b'de tenant'ların Vault rolü/policy/PKI provizyonu provider-
+  # terraform'dan (yukarıdaki blok — provider-terraform'un KENDİSİ artık bu
+  # amaçla KULLANILMIYOR, yalnızca ADR-0001'in genel escape-hatch'i olarak
+  # kurulu kalıyor) native bir `batch/v1 Job`'a taşındı. O Job, SABİT bir
+  # ServiceAccount (`vault-tenant-bootstrap`, crossplane-system) ile
+  # `auth/kubernetes/login role=vault-tenant-bootstrap` çağırıyor — ama bu
+  # ServiceAccount'u VE Vault auth role'ünü OLUŞTURAN hiçbir bootstrap adımı
+  # YAZILMAMIŞTI (yalnızca canlı bir test cluster'ında ELLE oluşturulmuştu).
+  # Sıfırdan bir kurulumda tenant namespace'i oluşsa BİLE Job'un KENDİSİ
+  # "role \"vault-tenant-bootstrap\" not found" ile SONSUZA KADAR
+  # başarısız olurdu. `provider-terraform` policy'si (yukarıdaki blokla
+  # AYNI dosya, provider-terraform-policy.hcl) zaten tam olarak ihtiyaç
+  # duyulan dar kapsamı (`tenant-*`, `eso-tenant-*` path'leri) tanımlıyor —
+  # yeniden kullanıldı, isim YANILTICI olsa da (artık provider-terraform'a
+  # ÖZEL değil) ayrı bir policy dosyası GEREKTİRMİYOR.
+  kubectl -n crossplane-system create serviceaccount vault-tenant-bootstrap \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  vexec write auth/kubernetes/role/vault-tenant-bootstrap \
+    bound_service_account_names=vault-tenant-bootstrap \
+    bound_service_account_namespaces=crossplane-system \
+    policies=provider-terraform \
+    ttl=1h
+  ok "  ServiceAccount + auth role 'vault-tenant-bootstrap' → crossplane-system (tenant Job'u için)"
+
   # --- eso-tenant-secrets rolü: ESO'nun TEK, paylaşımlı controller SA'sı --
   # (Faz 2 chart varsayılan adı: "external-secrets", namespace
   # "external-secrets"). Tüm tenant'lar bu TEK rolü paylaşır — izolasyon

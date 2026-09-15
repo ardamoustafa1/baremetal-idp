@@ -325,44 +325,78 @@ serviceAccount = {
 # "provider-terraform" (AYNI dar kapsam, bkz. policies/provider-terraform-
 # policy.hcl — yalnızca `tenant-*` ve `eso-tenant-*` path'leri).
 #
-# Bu Job, YALNIZCA şunları yaratır:
-#   - Vault k8s-auth role "tenant-<teamName>": bound_service_account_names=
+# Bu Job, YALNIZCA şunları yaratır (tüm adlar `<nsName>` = tam namespace,
+# "tenant-<team>-<env>", ÜZERİNDEN — team-only DEĞİL, bkz. aşağıdaki
+# düzeltme notu: bu, hem postgresql/function.k'nin `tenantRef` ile ürettiği
+# rol adıyla EŞLEŞMESİ hem de aynı takımın dev/prod ortamlarının BİRBİRİNİ
+# EZMEMESİ için ZORUNLUDUR):
+#   - Vault k8s-auth role "tenant-<nsName>": bound_service_account_names=
 #     tenant-workload, bound_service_account_namespaces=<nsName> — SADECE
 #     bu tenant'ın SA'sı bu role ile auth olabilir.
-#   - Vault policy "tenant-<teamName>": SADECE
-#     pki-int-<environment>/issue/tenant-<teamName> yoluna erişim.
-#   - Vault PKI role "tenant-<teamName>" (pki-int-<environment> mount'unda):
-#     allowed_domains="tenant-<teamName>.svc.cluster.local",
-#     allow_subdomains=true — yalnızca *.tenant-<teamName>.svc.cluster.local
+#   - Vault policy "tenant-<nsName>": SADECE
+#     pki-int-<environment>/issue/tenant-<nsName> yoluna erişim.
+#   - Vault PKI role "tenant-<nsName>" (pki-int-<environment> mount'unda):
+#     allowed_domains="<nsName>.svc.cluster.local",
+#     allow_subdomains=true — yalnızca *.<nsName>.svc.cluster.local
 #     için sertifika/kimlik bilgisi üretilebilir. Başka bir tenant'ın domain'i
 #     İSTENEMEZ (kabul kriteri: iki tenant birbirinin domain'ine erişemez).
-#   - Vault policy + k8s-auth role "eso-tenant-<teamName>": açık karar #16'nın
+#   - Vault policy + k8s-auth role "eso-tenant-<nsName>": açık karar #16'nın
 #     çözümü — HER tenant kendi ESO kimliğini alır (paylaşımlı DEĞİL),
-#     yalnızca KENDİ `kv/data/tenants/<nsName>/*` yoluna erişimle.
+#     yalnızca KENDİ `kv/data/tenants/<nsName>/*` yoluna erişimle. Rol adı
+#     `postgresql/function.k`'nin `role = "eso-tenant-${tenantRef}"` ile
+#     ÜRETTİĞİ değerle BİREBİR aynı olmalı (tenantRef = nsName).
+#
+# DÜZELTME (kod incelemesinde bulundu, GERÇEK bir üretim bug'ı): bu adlar
+# ÖNCEDEN `<teamName>` (yalnızca takım adı, ortam YOK) kullanıyordu —
+# (1) postgresql/function.k HER ZAMAN `<nsName>` ile üretilen bir rol adı
+#     BEKLİYORDU, iki taraf ASLA eşleşmiyordu (SecretStore auth HER ZAMAN
+#     başarısız); (2) aynı takımın dev/prod ortamları AYNI role/policy
+#     adını PAYLAŞIYORDU, ikinci ortamın bootstrap Job'ı BİRİNCİSİNİN
+#     `bound_service_account_namespaces` bağını SESSİZCE EZİYORDU.
 #
 # Job adı SABİT (tenant başına) — tüm girdiler (teamName/environment/nsName)
 # XR'ın ömrü boyunca DEĞİŞMEZ, bu yüzden Job spec'i de değişmez; aynı ad ile
 # tekrar apply zaten no-op'tur (Job şablonu immutable, Crossplane diff
 # görmez). `ttlSecondsAfterFinished` ile tamamlanan Job'lar otomatik temizlenir.
+# DÜZELTME (kod incelemesinde bulundu, GERÇEK bir bug): bu script'in
+# Vault policy/auth-role adları ÖNCEDEN yalnızca `${teamName}` kullanıyordu
+# (ör. `eso-tenant-acme`) — bu İKİ ayrı, gerçek üretim sorununa yol
+# açıyordu:
+#   (1) `postgresql/function.k`'nin ürettiği SecretStore, `eso-tenant-
+#       ${tenantRef}` rolünü BEKLİYOR — `tenantRef` her zaman TAM namespace
+#       adıdır (`tenant-<team>-<env>`, ör. "tenant-acme-dev"), team adı
+#       DEĞİL. Rol adları burada team-only iken, postgres tarafı tam
+#       namespace bekliyordu → İKİ TARAF ASLA EŞLEŞMİYORDU, SecretStore
+#       kimlik doğrulaması HER ZAMAN başarısız olurdu.
+#   (2) AYNI takımın `dev` ve `prod` ortamları AYNI Vault rolünü/policy'sini
+#       paylaşıyordu (`tenant-acme`, ortam FARKI YOK) — ama rolün
+#       `bound_service_account_namespaces` alanı ortama göre DEĞİŞİYORDU.
+#       İkinci ortam bootstrap edildiğinde `vault write` (idempotent PUT)
+#       BİRİNCİ ortamın namespace bağını SESSİZCE EZERDİ — iki ortam aynı
+#       anda çalışırken erişim izolasyonu YOKTU.
+# Çözüm: TÜM Vault tanımlayıcı adları (policy + auth role) `${nsName}`
+# (tam namespace, zaten hem team hem env içerir) üzerinden üretiliyor —
+# postgresql/function.k'nin `tenantRef` ile ÜRETTİĞİ AYNI değer, bu yüzden
+# iki composition ARTIK KESİN olarak aynı rol adına varır.
 _vaultBootstrapScript = """
 set -e
 export VAULT_ADDR=http://vault-active.vault.svc.cluster.local:8200
 TOKEN=$(vault write -field=token auth/kubernetes/login role=vault-tenant-bootstrap jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token)
 export VAULT_TOKEN=$TOKEN
 
-vault policy write tenant-${teamName} - <<'EOT'
-path "pki-int-${environment}/issue/tenant-${teamName}" {
+vault policy write tenant-${nsName} - <<'EOT'
+path "pki-int-${environment}/issue/tenant-${nsName}" {
   capabilities = ["create", "update"]
 }
 EOT
 
-vault write auth/kubernetes/role/tenant-${teamName} \\
+vault write auth/kubernetes/role/tenant-${nsName} \\
   bound_service_account_names=tenant-workload \\
   bound_service_account_namespaces=${nsName} \\
-  token_policies=tenant-${teamName} \\
+  token_policies=tenant-${nsName} \\
   token_ttl=3600
 
-vault policy write eso-tenant-${teamName} - <<'EOT'
+vault policy write eso-tenant-${nsName} - <<'EOT'
 path "kv/data/tenants/${nsName}/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
@@ -371,19 +405,26 @@ path "kv/metadata/tenants/${nsName}/*" {
 }
 EOT
 
-vault write auth/kubernetes/role/eso-tenant-${teamName} \\
+vault write auth/kubernetes/role/eso-tenant-${nsName} \\
   bound_service_account_names=eso-tenant-secrets \\
   bound_service_account_namespaces=${nsName} \\
-  token_policies=eso-tenant-${teamName} \\
+  token_policies=eso-tenant-${nsName} \\
   token_ttl=3600
 
-vault write pki-int-${environment}/roles/tenant-${teamName} \\
+# DÜZELTME (kod incelemesinde bulundu): max_ttl/ttl ÖNCEDEN 720h (30 gün)
+# idi ama postgresql/function.k'nin ürettiği Certificate `duration=2160h`
+# (90 gün) İSTİYOR — Vault, bir rolün max_ttl'ini AŞAN bir süre istenirse
+# imzalama isteğini REDDEDER (bkz. Vault PKI API dokümantasyonu). 2160h'e
+# çekildi — postgresql/function.k'deki Certificate'ın KENDİ yorumunun
+# ZATEN iddia ettiği ("90 gün — tenant PKI rolünün max_ttl'i ile aynı")
+# ama GERÇEKTE hiç doğru olmamış durumla eşleşecek şekilde.
+vault write pki-int-${environment}/roles/tenant-${nsName} \\
   allowed_domains=${nsName}.svc.cluster.local \\
   allow_subdomains=true \\
   allow_bare_domains=false \\
   allow_glob_domains=false \\
-  max_ttl=720h \\
-  ttl=720h \\
+  max_ttl=2160h \\
+  ttl=2160h \\
   key_type=rsa \\
   key_bits=2048
 """
@@ -510,7 +551,11 @@ issuer = {
     }
     spec.vault = {
         server = "http://vault-active.vault.svc.cluster.local:8200"
-        path = "pki-int-${environment}/sign/tenant-${teamName}"
+        # DÜZELTME: PKI rolü adı artık `tenant-${nsName}` (bkz.
+        # _vaultBootstrapScript) — burası ARTIK ${teamName} DEĞİL, aynı
+        # role'e işaret etmeli, aksi halde imzalama "role not found" ile
+        # başarısız olur.
+        path = "pki-int-${environment}/sign/tenant-${nsName}"
         auth.kubernetes = {
             role = "cert-manager"
             mountPath = "/v1/auth/kubernetes"
