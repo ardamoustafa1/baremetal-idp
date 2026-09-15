@@ -78,7 +78,7 @@ jobs:
     # ÖNEMLİ SINIRLAMA (bilinçli, açıkça işaretlendi): bu iş akışı,
     # `tests/e2e/kind-chain/run.sh`'i çalıştırır — bu script, GERÇEK
     # compositions/{tenant,postgresql}/composition.yaml'ı KULLANIR ama
-    # Cilium/Vault-Terraform/Rook-Ceph/ESO'ya bağımlı 7 kaynağı (bkz.
+    # Cilium/Vault-Terraform/Rook-Ceph/ESO'ya bağımlı 9 kaynağı (bkz.
     # tests/e2e/kind-chain/README.md "Kapsam dışı bırakılanlar") devre dışı
     # bırakan bir RUNTIME PATCH uygular (kind'de bu bileşenler yok) — bu,
     # bu görevde GERÇEKTEN çalıştırılıp doğrulanan senaryodur (bkz.
@@ -106,3 +106,31 @@ jobs:
       - name: Kind cluster'ı temizle
         if: always()
         run: kind delete cluster --name platform-e2e || true
+
+  # DÜZELTME (Faz 12k, code review #15): Backstage portal backend'inin
+  # (`platform/backstage/portal/packages/backend`) TypeScript/build adımı
+  # bu CI'da HİÇ YOKTU — `crossplane.ts`'in tenant-ownership kontrolü (Faz
+  # 12g/12k) gibi değişiklikler yalnızca ELLE (`npx tsc --noEmit`, bu
+  # görevde defalarca) doğrulanıyordu, PR'lara OTOMATİK bir kapı YOKTU. Bu
+  # job yalnızca TİP KONTROLÜ yapar (`yarn tsc`) — tam bir `backstage-cli
+  # repo build --all` (Docker image üretimi dahil) bu CI'nın kapsamına
+  # BİLİNÇLİ OLARAK alınmadı (çok daha uzun sürer, bu iş yalnızca "portal
+  # kodu tip-güvenli mi" sorusuna cevap arıyor).
+  portal-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: platform/backstage/portal
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Corepack ile yarn'ı etkinleştir (packageManager alanındaki sürüm)
+        run: corepack enable
+      - name: Bağımlılıkları kur
+        run: yarn install --immutable
+      - name: TypeScript tip kontrolü (tsc --noEmit)
+        run: yarn tsc

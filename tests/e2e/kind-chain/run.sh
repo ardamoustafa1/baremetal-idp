@@ -8,7 +8,7 @@
 #
 # BU SCRIPT'İN KAPSAMI VE SINIRLARI (bkz. README.md için tam liste):
 # gerçek Tenant/Postgres composition.yaml dosyaları KULLANILIR ama
-# Cilium/Rook-Ceph/ESO/provider-terraform'a bağımlı 7 kaynak (bkz. aşağıdaki
+# Cilium/Rook-Ceph/ESO/provider-terraform'a bağımlı 9 kaynak (bkz. aşağıdaki
 # "ÇIKARILAN KAYNAKLAR") kind'de bu bileşenler kurulu OLMADIĞI için bir
 # ÇALIŞMA-ZAMANI patch'iyle composition'ın `items` listesinden çıkarılır.
 # Bu patch REPO'DAKİ gerçek composition.yaml dosyasını DEĞİŞTİRMEZ — yalnızca
@@ -27,10 +27,18 @@
 #                vaultWorkspace (provider-terraform gerekir — bu script Vault
 #                PKI rolünü/policy'sini DOĞRUDAN `vault write` ile kurar,
 #                Terraform'un otomasyonunu MANUEL olarak taklit eder)
+#                vaultCaSecretStore, vaultCaExternalSecret (ESO gerekir —
+#                tenant-issuer'ın beklediği `vault-ca-bundle` Secret'ı bu
+#                script tarafından DOĞRUDAN, ESO round-trip'i OLMADAN
+#                oluşturulur; bkz. Faz 12k, code review #14)
 #   Postgres:    backupBucket (Rook-Ceph OBC), scheduledBackup (aynı sebep),
 #                networkPolicy (Cilium), serviceMonitor (kube-prometheus-stack
 #                CRD'si), secretStore/pushSecret/externalSecret (ESO+Vault
 #                kv/ mount'u — bağlantı sırrının Vault'a round-trip'i)
+#
+# Vault, GERÇEK repo `values.yaml` + `values-tls.yaml` overlay'iyle KENDİ
+# PKI'sinden imzalı bir sertifikayla HTTPS dinler (Faz 12g/12h/12j'den beri
+# compositions bunu ZORUNLU kılıyor — plaintext YOK) — bkz. 6b/10 adımı.
 # =============================================================================
 set -Eeuo pipefail
 
@@ -207,14 +215,71 @@ kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault write pk
 # `crossplane-system` namespace'i var olduktan sonra) kuruluyor — bkz.
 # 7/10 adımının SONU.
 
-# NOT: gerçek repo policy dosyası (pki/vault/policies/cert-manager-policy.hcl)
-# `pki-int-*/sign/tenant-*` GLOB'u kullanıyor — bu script de AYNI glob'u
-# kullanmalı, aksi halde `tenant-<nsName>` biçimindeki YENİ rol adları
-# (ör. "tenant-tenant-acme-dev") cert-manager'ın policy'siyle EŞLEŞMEZ.
-printf 'path "pki-int-dev/sign/tenant-*" {\n  capabilities = ["create", "update"]\n}\n' > "${WORK}/cert-manager-policy.hcl"
-kubectl -n vault cp "${WORK}/cert-manager-policy.hcl" "vault/vault-0:/tmp/cert-manager-policy.hcl"
-kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault policy write cert-manager /tmp/cert-manager-policy.hcl" >/dev/null
-kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault write auth/kubernetes/role/cert-manager bound_service_account_names=cert-manager bound_service_account_namespaces='*' policies=cert-manager ttl=1h" >/dev/null
+# DÜZELTME (Faz 12k, code review #14): bu script ÖNCEDEN burada PAYLAŞILAN,
+# `tenant-*` GLOB'lu bir "cert-manager" Vault rolü/policy'si oluşturuyordu
+# — bu, Faz 12j'nin (code review #8) KALDIRDIĞI GÜVENLİK AÇIĞIYLA AYNI
+# desendi ve GERÇEK repodaki policy dosyasıyla ZATEN SENKRON DEĞİLDİ (o
+# dosya artık bu glob'u İÇERMİYOR). Tenant Issuer'ı artık PAYLAŞILAN
+# "cert-manager" rolünü DEĞİL, `vaultBootstrapJob`'ın oluşturduğu KENDİ
+# `cert-manager-tenant-<nsName>` rolünü kullanıyor (bkz. compositions/
+# tenant/function.k) — bu BLOK TAMAMEN GEREKSİZDİ, KALDIRILDI (ölü kod).
+
+log "6b/10 Vault listener TLS etkinleştiriliyor (kendi PKI'sinden — GERÇEK bootstrap/03-pki.sh:enable_vault_tls() ile AYNI prosedür)..."
+# DÜZELTME (Faz 12k, code review #14): compositions/tenant, compositions/
+# postgresql ve platform/pki/cert-manager Faz 12g/12h/12j'den beri TÜMÜYLE
+# `https://vault-active...` bekliyor (plaintext http YOK) — bu e2e script'i
+# hâlâ Vault'u plaintext bırakıyordu, yani GÜNCEL composition'larla bu test
+# ÇALIŞAMAZDI (tenant-issuer/postgres Issuer'ları HİÇBİR ZAMAN Ready
+# olmazdı — aşağıdaki bekleme döngülerinin SÜRESİZ olması bunu SESSİZCE
+# sonsuz bir askıya çevirirdi, bkz. o düzeltmeler).
+kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault write pki-int-dev/roles/vault-server allowed_domains=vault-internal,vault.vault.svc.cluster.local,vault-active.vault.svc.cluster.local allow_subdomains=true allow_bare_domains=true max_ttl=2160h key_type=rsa key_bits=2048" >/dev/null
+kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault write -format=json pki-int-dev/issue/vault-server common_name=vault-active.vault.svc.cluster.local alt_names=vault-0.vault-internal,vault-1.vault-internal,vault-2.vault-internal,vault.vault.svc.cluster.local,vault-active.vault.svc.cluster.local ttl=2160h" > "${WORK}/vault-server-cert.json"
+python3 -c "
+import json
+d = json.load(open('${WORK}/vault-server-cert.json'))['data']
+open('${WORK}/vault-tls.crt', 'w').write(d['certificate'] + chr(10) + d['issuing_ca'])
+open('${WORK}/vault-tls.key', 'w').write(d['private_key'])
+open('${WORK}/vault-issuing-ca.crt', 'w').write(d['issuing_ca'])
+"
+kubectl -n vault create secret tls vault-server-tls \
+  --cert="${WORK}/vault-tls.crt" --key="${WORK}/vault-tls.key" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault read -field=certificate pki-root/cert/ca" > "${WORK}/root-ca.crt"
+cat "${WORK}/vault-issuing-ca.crt" "${WORK}/root-ca.crt" > "${WORK}/vault-ca-chain.pem"
+kubectl -n vault create configmap vault-ca-bundle \
+  --from-file="ca.crt=${WORK}/vault-ca-chain.pem" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+# `values-tls.yaml` GERÇEK repo dosyası — bootstrap/03-pki.sh'in kullandığı
+# AYNI overlay, burada da yeniden kullanılıyor (yeni bir tane İCAT EDİLMEDİ).
+helm upgrade --install vault hashicorp/vault \
+  --namespace vault --version 0.29.1 \
+  -f "${REPO_ROOT}/platform/pki/vault/values.yaml" \
+  -f "${REPO_ROOT}/platform/pki/vault/values-tls.yaml" \
+  --set server.dataStorage.storageClass=standard \
+  --set server.auditStorage.storageClass=standard \
+  --set server.dataStorage.size=1Gi \
+  --set server.auditStorage.size=1Gi \
+  --set server.affinity="" \
+  --set server.livenessProbe.initialDelaySeconds=300 \
+  --timeout 5m >/dev/null
+kubectl -n vault rollout restart statefulset/vault
+for pod in vault-0 vault-1 vault-2; do
+  _tls_deadline=$(( $(date +%s) + 300 ))
+  until kubectl -n vault exec "${pod}" -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status' 2>&1 | grep -qv "connection refused\|dial tcp\|i/o timeout\|x509\|http: server gave HTTP response"; do
+    (( $(date +%s) < _tls_deadline )) || { echo "HATA: ${pod} TLS restart sonrası 5 dakikada HTTPS ile yanıt vermedi" >&2; exit 1; }
+    sleep 3
+  done
+  _tls_sealed_deadline=$(( $(date +%s) + 120 ))
+  until kubectl -n vault exec "${pod}" -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status' 2>&1 | grep -q "Sealed.*false"; do
+    (( $(date +%s) < _tls_sealed_deadline )) || { echo "HATA: ${pod} TLS restart sonrası transit ile otomatik unseal olmadı (120s)" >&2; exit 1; }
+    sleep 3
+  done
+done
+log "   ✅ Vault listener HTTPS (pki-int-dev/roles/vault-server'dan imzalı, tüm pod'lar unsealed)"
+# Bundan SONRAKİ tüm `vault` CLI çağrıları VAULT_ADDR=https://127.0.0.1:8200
+# VAULT_SKIP_VERIFY=true İLE yapılmalıdır (aşağıda TUTARLI şekilde uygulandı).
 
 log "7/10 Crossplane + function-kcl + function-auto-ready kuruluyor..."
 helm repo add crossplane-stable https://charts.crossplane.io/stable >/dev/null 2>&1 || true
@@ -283,11 +348,29 @@ EOF
 # `vault-tenant-bootstrap` kimliği (bkz. 6/10 adımındaki yorum) — ARTIK
 # `crossplane-system` namespace'i (yukarıda Crossplane kurulumuyla) var,
 # bu yüzden burada, tenant claim uygulanmadan HEMEN ÖNCE kuruluyor.
+#
+# DÜZELTME (Faz 12k, code review #14): policy ÖNCEDEN bu dosyada ELLE,
+# GERÇEK `pki/vault/policies/provider-terraform-policy.hcl`'in bir
+# KOPYASI olarak YAZILIYORDU — Faz 12j (code review #8) o GERÇEK dosyaya
+# `cert-manager-tenant-*` path'lerini EKLEDİĞİNDE bu inline kopya
+# GÜNCELLENMEDİ (bu SINIFTA bir drift'in TAM ÖRNEĞİ — bkz. PLATFORM_
+# CONTEXT.md Faz 12j'nin "öğrenilen" notu #5). Sonuç: `vaultBootstrapJob`'ın
+# YENİ `cert-manager-tenant-${nsName}` policy/role'ü YAZMA denemesi
+# "permission denied" ile başarısız olurdu. Artık GERÇEK dosya `kubectl cp`
+# ile kullanılıyor — bu drift SINIFI BİR DAHA OLUŞAMAZ.
 kubectl -n crossplane-system create serviceaccount vault-tenant-bootstrap --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-printf 'path "auth/kubernetes/role/tenant-*" {\n  capabilities = ["create", "read", "update", "delete"]\n}\npath "sys/policies/acl/tenant-*" {\n  capabilities = ["create", "read", "update", "delete"]\n}\npath "auth/kubernetes/role/eso-tenant-*" {\n  capabilities = ["create", "read", "update", "delete"]\n}\npath "sys/policies/acl/eso-tenant-*" {\n  capabilities = ["create", "read", "update", "delete"]\n}\npath "pki-int-dev/roles/tenant-*" {\n  capabilities = ["create", "read", "update", "delete"]\n}\n' > "${WORK}/vault-tenant-bootstrap-policy.hcl"
-kubectl -n vault cp "${WORK}/vault-tenant-bootstrap-policy.hcl" "vault/vault-0:/tmp/vault-tenant-bootstrap-policy.hcl"
-kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault policy write provider-terraform /tmp/vault-tenant-bootstrap-policy.hcl" >/dev/null
-kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault write auth/kubernetes/role/vault-tenant-bootstrap bound_service_account_names=vault-tenant-bootstrap bound_service_account_namespaces=crossplane-system policies=provider-terraform ttl=1h" >/dev/null
+kubectl -n vault cp "${REPO_ROOT}/platform/pki/vault/policies/provider-terraform-policy.hcl" "vault/vault-0:/tmp/provider-terraform-policy.hcl"
+kubectl -n vault exec vault-0 -- sh -c "VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true VAULT_TOKEN=${ROOT_TOKEN} vault policy write provider-terraform /tmp/provider-terraform-policy.hcl" >/dev/null
+kubectl -n vault exec vault-0 -- sh -c "VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true VAULT_TOKEN=${ROOT_TOKEN} vault write auth/kubernetes/role/vault-tenant-bootstrap bound_service_account_names=vault-tenant-bootstrap bound_service_account_namespaces=crossplane-system policies=provider-terraform ttl=1h" >/dev/null
+
+# DÜZELTME (Faz 12k, code review #14): `vaultBootstrapJob` artık (Faz 12h)
+# `vault` CLI'ını HTTPS ÜZERİNDEN çağırıyor ve `VAULT_CACERT=/etc/vault-ca/
+# ca.crt`yi bir ConfigMap volume'ünden bekliyor (bkz. compositions/tenant/
+# function.k) — bu ConfigMap `crossplane-system` namespace'inde YOKTU
+# (yalnızca `vault` namespace'inde oluşturulmuştu, 6b/10 adımında).
+kubectl -n crossplane-system create configmap vault-ca-bundle \
+  --from-file="ca.crt=${WORK}/vault-ca-chain.pem" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 log "8/10 Tenant XRD/Composition uygulanıyor (Cilium kaynakları test-scope dışı bırakıldı)..."
 kubectl apply -f "${REPO_ROOT}/platform/compositions/tenant/xrd.yaml" >/dev/null
@@ -298,15 +381,30 @@ kubectl apply -f "${REPO_ROOT}/platform/compositions/tenant/xrd.yaml" >/dev/null
 # isim eşleşmediği için satır ZATEN sessizce hiçbir şey stripLEMİYORDU —
 # `vaultWorkspace` adı composition.yaml'da hiç yoktu, `strip_unsupported_
 # resources.py` no-op geçiyordu; bu YANLIŞLIKLA zararsızdı ama YANILTICIYDI).
+# DÜZELTME (Faz 12k, code review #14): `vaultCaSecretStore`/
+# `vaultCaExternalSecret` (Faz 12h/12j'de eklendi) de artık strip edilmeli
+# — ESO bu kind cluster'ında HİÇ kurulu değil (bkz. dosya başlığındaki
+# "ÇIKARILAN KAYNAKLAR" listesi), bu ikisi ESO'nun SecretStore/
+# ExternalSecret CRD'lerine ihtiyaç duyar. Tenant Issuer'ının `caBundleSecretRef`
+# ile beklediği `vault-ca-bundle` Secret'ı bunun yerine AŞAĞIDA DOĞRUDAN
+# (ESO round-trip'i olmadan) oluşturulur — GERÇEK kurulumda bu ESO/Vault
+# KV round-trip'i ile gelir, burada YALNIZCA test amaçlı kestirme bir yol.
 python3 "${SCRIPT_DIR}/strip_unsupported_resources.py" \
   "${REPO_ROOT}/platform/compositions/tenant/composition.yaml" \
   "${WORK}/tenant-composition.yaml" \
-  defaultDenyPolicy tierNetworkPolicy
+  defaultDenyPolicy tierNetworkPolicy vaultCaSecretStore vaultCaExternalSecret
 kubectl apply -f "${WORK}/tenant-composition.yaml" >/dev/null
 
 kubectl create namespace tenant-requests --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl apply -f "${REPO_ROOT}/platform/compositions/tenant/examples/tenant-acme-dev.yaml" >/dev/null
 kubectl wait namespace/tenant-acme-dev --for=jsonpath='{.status.phase}'=Active --timeout=120s >/dev/null
+
+# DÜZELTME (Faz 12k, code review #14): tenant-issuer'ın `caBundleSecretRef`
+# ile beklediği Secret — yukarıda strip edilen ESO round-trip'inin YERİNE
+# DOĞRUDAN oluşturuluyor (aynı CA zinciri, 6b/10 adımında üretilmişti).
+kubectl -n tenant-acme-dev create secret generic vault-ca-bundle \
+  --from-file="ca.crt=${WORK}/vault-ca-chain.pem" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
 # Issuer'ın Vault kubernetes-auth ile çalışması için ZORUNLU olan
 # "cert-manager" ServiceAccount + token-mint RBAC'ı — composition BUNU
@@ -341,7 +439,18 @@ roleRef:
 EOF
 
 log "   tenant-issuer'ın Ready olması bekleniyor..."
+# DÜZELTME (Faz 12k, code review #14): bu döngü ÖNCEDEN SÜRESİZDİ — Issuer
+# hiçbir zaman Ready olmazsa (ör. TLS/CA yanlış yapılandırılmışsa, TAM DA
+# bu script'in önceki hâlinde OLDUĞU gibi) script SONSUZA KADAR askıda
+# kalırdı, CI yalnızca DIŞ bir job timeout'uyla (kafası karışık bir hata
+# mesajıyla) durdururdu.
+_issuer_deadline=$(( $(date +%s) + 180 ))
 until kubectl -n tenant-acme-dev get issuer tenant-issuer -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True; do
+  (( $(date +%s) < _issuer_deadline )) || {
+    echo "HATA: tenant-issuer 180s içinde Ready olmadı. Durum:" >&2
+    kubectl -n tenant-acme-dev describe issuer tenant-issuer >&2 || true
+    exit 1
+  }
   sleep 5
   kubectl -n tenant-acme-dev annotate issuer tenant-issuer force-resync="$(date +%s)" --overwrite >/dev/null 2>&1 || true
 done
@@ -366,13 +475,28 @@ kubectl apply -f "${WORK}/postgresql-composition.yaml" >/dev/null
 kubectl apply -f "${REPO_ROOT}/platform/compositions/postgresql/examples/postgresql-small.yaml" >/dev/null
 
 log "   Certificate'ın Ready olması bekleniyor..."
+# DÜZELTME (Faz 12k, code review #14): AYNI süresiz-döngü sorunu burada da
+# vardı.
+_cert_deadline=$(( $(date +%s) + 180 ))
 until kubectl -n tenant-acme-dev get certificate -l 'crossplane.io/composite' -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null | grep -q True; do
+  (( $(date +%s) < _cert_deadline )) || {
+    echo "HATA: Postgres server Certificate 180s içinde Ready olmadı." >&2
+    kubectl -n tenant-acme-dev get certificate -l 'crossplane.io/composite' -o yaml >&2 || true
+    exit 1
+  }
   sleep 5
 done
 log "   ✅ Postgres server Certificate Ready (aynı Vault Issuer'dan imzalandı)"
 
 log "   CNPG Cluster'ın sağlıklı olması bekleniyor (birkaç dakika sürebilir)..."
+_cluster_deadline=$(( $(date +%s) + 420 ))
 until kubectl -n tenant-acme-dev get cluster -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q "Cluster in healthy state"; do
+  (( $(date +%s) < _cluster_deadline )) || {
+    echo "HATA: CNPG Cluster 420s içinde healthy olmadı. Durum:" >&2
+    kubectl -n tenant-acme-dev get cluster -o yaml >&2 || true
+    kubectl -n tenant-acme-dev get pods >&2 || true
+    exit 1
+  }
   sleep 10
 done
 CLUSTER_NAME="$(kubectl -n tenant-acme-dev get cluster -o jsonpath='{.items[0].metadata.name}')"
@@ -384,7 +508,7 @@ kubectl -n tenant-acme-dev get secret "${CLUSTER_NAME}-app" >/dev/null \
 
 CERT_SECRET="$(kubectl -n tenant-acme-dev get certificate -l 'crossplane.io/composite' -o jsonpath='{.items[0].spec.secretName}')"
 kubectl -n tenant-acme-dev get secret "${CERT_SECRET}" -o jsonpath='{.data.tls\.crt}' | base64 -d > "${WORK}/leaf.crt"
-kubectl -n vault exec vault-0 -- sh -c "VAULT_TOKEN=${ROOT_TOKEN} vault read -field=certificate pki-root/cert/ca" > "${WORK}/root.crt"
+kubectl -n vault exec vault-0 -- sh -c "VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true VAULT_TOKEN=${ROOT_TOKEN} vault read -field=certificate pki-root/cert/ca" > "${WORK}/root.crt"
 cat "${WORK}/int-signed.crt" "${WORK}/root.crt" > "${WORK}/chain.pem"
 openssl verify -CAfile "${WORK}/chain.pem" "${WORK}/leaf.crt"
 

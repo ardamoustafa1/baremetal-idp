@@ -93,3 +93,23 @@ onaysız-prod/onaylı-prod/dev) beklenen sonucu verdi — politika hem
 gerçekten reddediyor hem de gereksiz yere engellemiyor. İleride bu CLI
 sürümü `test` komutunun values şemasını güncellediğinde bu senaryolar
 statik bir `kyverno-test.yaml` fixture'ına taşınabilir.
+
+## Onay annotation'larının kim tarafından yazılabileceği (Faz 12k, code
+## review #11'in çözümü) — CANLI TEST EDİLEMEDİ
+
+`only-admins-set-deletion-approved-*` kuralları, bu iki annotation'ın
+DEĞERİ DEĞİŞTİĞİNDE (`request.object` vs `request.oldObject`
+karşılaştırması) isteği yapanın `platform-admins` grubunda olmasını
+zorunlu kılar. Bu kuralın precondition'ı `kyverno apply --set
+request.oldObject...` ile TEST EDİLMEYE ÇALIŞILDI ama bu Kyverno CLI
+sürümünde (1.19.1) `-r` ile verilen kaynak dosyası HER ZAMAN hem
+`request.object` HEM `request.oldObject`'e bağlanıyor — `--set` ile
+yalnızca `request.oldObject`'i FARKLI bir değere ayarlamak (UPDATE'i
+GERÇEKÇİ simüle etmek için gereken) bu ortamda MÜMKÜN olmadı (denendi,
+kanıtlandı: `--set request.oldObject.metadata.annotations....=EMPTYSTR`
+verilse bile `request.oldObject` sessizce `request.object` ile AYNI
+değere düştü). Kuralın MANTIĞI (JMESPath karşılaştırması + grup kontrolü,
+`restrict-tenant-claim-creation.yaml`'daki KANITLANMIŞ AYNI desen) elle
+incelenip doğru bulundu ama GERÇEK bir admission webhook isteğine (ya da
+bu CLI'nin `oldObject`'i doğru bağladığı bir sürüme) karşı ÇALIŞTIRILMADI
+— bu, dürüstçe işaretlenen bir açık iş.

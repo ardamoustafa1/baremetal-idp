@@ -10,25 +10,48 @@ import { kube, claimBase } from './kube';
 // engellemiyordu. Sonuç: herhangi bir authenticated Backstage kullanıcısı,
 // ismini bilerek/tahmin ederek HERHANGİ BİR tenant'ın (kendisininki olmasa
 // bile) claim/composite status'unu okuyabiliyordu — cross-tenant bilgi
-// sızıntısı. Aşağıda, çağıranın OIDC grup üyeliği (Backstage'in
-// `ownershipEntityRefs`'i — org data provider tarafından OIDC gruplarından
-// senkronlanır) tenant'ın `spec.oidcGroup`'una göre KONTROL EDİLİYOR; bu
-// katmanda bir sahiplik kontrolü olmadan Kubernetes RBAC seviyesinde bunu
-// düzeltmek mümkün değildi çünkü backend TEK bir ServiceAccount kullanıyor.
-const PLATFORM_ADMIN_GROUP = 'group:default/platform-admins';
+// sızıntısı. Aşağıda, çağıranın Backstage grup üyeliği (`ownershipEntityRefs`)
+// tenant'ın SAHİBİ olan Group'a göre KONTROL EDİLİYOR.
+//
+// DÜZELTME (Faz 12k, code review #12): grup adı ÖNCEDEN `group:default/
+// ${claim.spec.oidcGroup}` (ör. "group:default/tenant-acme") VE
+// `group:default/platform-admins` idi — AMA `oidcGroup` KUBERNETES OIDC
+// grup adıdır (K8s RBAC/Vault için), Backstage'in KENDİ katalog Group
+// entity'leriyle HİÇBİR OTOMATİK eşleme YOKTU (gerçek bir Keycloak→
+// Backstage org data provider'ı bu repoda HİÇ YAZILMADI — bkz. catalog/
+// organization.yaml'ın "OIDC grup senkronizasyonu" notu). AYRICA katalogda
+// "platform-admins" DEĞİL "platform-team" adlı bir grup VARDI. Sonuç:
+// mevcut, kataloğa TANIMLI operatör BİLE bu kontrolden 403 alırdı. Artık
+// `compositions/tenant/function.k`'nin ZATEN ürettiği catalog-info.yaml'ın
+// `spec.owner: team-${teamName}` alanıyla BİREBİR AYNI değer kullanılıyor
+// (`team-<teamName>`, `oidcGroup` DEĞİL) — Backstage'in KENDİ, halihazırda
+// var olan katalog ownership deseni; yeni bir kural İCAT EDİLMEDİ. Admin
+// bypass'ı da katalogda GERÇEKTEN var olan "platform-team" grubuna çekildi
+// (bkz. `platformCatalog.ts`'in AYNI grubu varsayılan owner olarak
+// kullanması — tutarlı).
+//
+// AÇIK KALAN BOŞLUK (dürüstçe işaretli, bu görevde ÇÖZÜLMEDİ): bu statik
+// catalog verisi (organization.yaml) ELLE bakımı yapılır — gerçek bir OIDC/
+// Keycloak grup senkronizasyon provider'ı KURULANA KADAR, yeni bir tenant
+// oluşturulduğunda `team-<teamName>` Group entity'si de ELLE eklenmelidir
+// (bkz. organization.yaml'daki AYNI not).
+const PLATFORM_ADMIN_GROUP = 'group:default/platform-team';
 
 async function resolveOwnerGroup(kind: string, claim: any): Promise<string | undefined> {
-  if (kind === 'Tenant') return claim.spec?.oidcGroup;
-  // PostgreSQLInstance'ın kendi oidcGroup'u yok — sahipliği `tenantRef`
+  if (kind === 'Tenant') {
+    const teamName = claim.spec?.teamName;
+    return teamName ? `team-${teamName}` : undefined;
+  }
+  // PostgreSQLInstance'ın kendi teamName'i yok — sahipliği `tenantRef`
   // (tenant'ın namespace'i, örn. "tenant-acme-dev") üzerinden DOLAYLI.
-  // O namespace'i üreten Tenant claim'ini bulup ONUN oidcGroup'unu kullan.
+  // O namespace'i üreten Tenant claim'ini bulup ONUN teamName'ini kullan.
   const tenantRef: string | undefined = claim.spec?.tenantRef;
   if (!tenantRef) return undefined;
   const list = await kube(`${claimBase}/tenants`);
   const owner = (list.items ?? []).find(
     (t: any) => `tenant-${t.spec?.teamName}-${t.spec?.environment}` === tenantRef,
   );
-  return owner?.spec?.oidcGroup;
+  return owner?.spec?.teamName ? `team-${owner.spec.teamName}` : undefined;
 }
 
 export default createBackendPlugin({

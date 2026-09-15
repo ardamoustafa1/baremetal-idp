@@ -65,7 +65,7 @@ _caller_repo_rev="${PLATFORM_REPO_REVISION:-}"
 # İçinde en az bir ${VAR} referansı geçen HER değişken adı — envsubst'e
 # TÜM ortam değişkenlerini vermek yerine yalnızca BİLİNENLERİ listelemek,
 # render sonrası "beklenmedik değişken KALDI mı" kontrolünü ANLAMLI kılar.
-SUBST_VARS='$PLATFORM_REPO_URL $PLATFORM_REPO_REVISION $HARBOR_HOSTNAME'
+SUBST_VARS='$PLATFORM_REPO_URL $PLATFORM_REPO_REVISION $HARBOR_HOSTNAME $CEPH_OBJECTSTORE_NAME $VELERO_OFFSITE_S3_URL $VELERO_OFFSITE_S3_REGION $VELERO_OFFSITE_S3_BUCKET $VELERO_OFFSITE_S3_FORCE_PATH_STYLE'
 while IFS='=' read -r key _; do
   [[ "$key" =~ ^[A-Z_]+$ ]] || continue
   SUBST_VARS="${SUBST_VARS} \$${key}"
@@ -116,6 +116,20 @@ render_dir "${REPO_ROOT}/platform/bootstrap/app-of-apps/underlay"
 
 echo "Render ediliyor: platform/policies/security/"
 render_dir "${REPO_ROOT}/platform/policies/security"
+
+# DÜZELTME (Faz 12k, code review #13): `apps/02-velero.yaml.tpl`'in
+# `valueFiles`'ı ÖNCEDEN ham `values.yaml.tpl`'e (envsubst edilmemiş
+# ${CEPH_OBJECTSTORE_NAME} İÇEREN) işaret ediyordu — Helm'in `$values` ref
+# source'u bu dosyayı OLDUĞU GİBİ git'ten okur, envsubst UYGULAMAZ. Manuel
+# kurulumun (06-velero.sh, envsubst render eder) ve ArgoCD'nin GÖRDÜĞÜ
+# değerler böylece FARKLIYDI — ArgoCD SONRADAN devraldığında (adoption)
+# bozuk bir S3 endpoint'i uygulardı. `values.yaml.tpl`/`values-offsite.
+# yaml.tpl` İÇİNDEKİ tüm değerler (CEPH_OBJECTSTORE_NAME, VELERO_OFFSITE_
+# S3_*) SIR DEĞİLDİR (gerçek S3 access/secret key'ler `velero-credentials`
+# Secret'ına AYRI gider, bkz. 06-velero.sh) — bu yüzden diğer Application
+# manifestleriyle AYNI şekilde render edilip commit EDİLEBİLİR.
+echo "Render ediliyor: platform/control-plane/velero/"
+render_dir "${REPO_ROOT}/platform/control-plane/velero"
 
 if [[ "${VERIFY_ONLY}" == "true" ]]; then
   if [[ "${FAIL}" == "true" ]]; then

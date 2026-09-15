@@ -40,6 +40,28 @@
 # `nsName` türetimi) `-prod` ile bitip bitmediğine bakılarak belirlenir.
 # `tenantRef` artık immutable (bkz. postgresql/xrd.yaml) — bu kontrolü
 # BYPASS etmenin ikinci yolu (tenantRef'i dev'e çevirip silmek) KAPALI.
+#
+# DÜZELTME (Faz 12k, code review #11 — YÜKSEK): bu politika ÖNCEDEN
+# yalnızca annotation'ların BOŞ OLMADIĞINI kontrol ediyordu — KİMİN bu
+# annotation'ları YAZABİLECEĞİNE dair HİÇBİR kısıt YOKTU. Claim'i
+# güncelleyebilen (yani `tenant-claim-requester` ClusterRole'üne sahip,
+# bkz. policies/rbac/tenant-claim-rbac.yaml) HERHANGİ bir kullanıcı
+# kendi adını yazıp "onaylandı" görüntüsü verebilirdi — teknik kontrol
+# GERÇEK bir yetkilendirme DOĞRULAMASI yapmıyordu. YENİ 4 kural: bu iki
+# annotation'ın DEĞERİ DEĞİŞTİĞİNDE (eklendiğinde/güncellendiğinde),
+# isteği yapan `platform-admins` (veya `oidc:platform-admins`) grubunda
+# OLMALIDIR — `restrict-tenant-claim-creation.yaml`'daki (Faz 6) AYNI
+# grup kontrolü/AYNI çift-biçim deseni yeniden kullanıldı. ArgoCD'nin
+# KENDİ SA'sı İSTİSNA (`restrict-tenant-claim-creation.yaml` ile AYNI
+# gerekçe: GitOps akışında asıl denetim PR/CODEOWNERS incelemesinde olur,
+# ArgoCD yalnızca ONAYLANMIŞ bir git commit'ini uygular).
+#
+# HÂLÂ DIŞARIDA KALAN BOŞLUK (dürüstçe işaretli): bu kontrol yalnızca
+# Vault/Kubernetes SEVİYESİNDE "platform-admins grubunda mısın" sorusunu
+# cevaplar — gerçek bir PR/branch-protection incelemesinin GERÇEKTEN
+# yapıldığını/GitHub'daki CODEOWNERS kuralının GERÇEKTEN uygulandığını BU
+# POLİTİKA DOĞRULAYAMAZ (bu, tenant-requests reposunun GitHub ayarlarına
+# aittir, bu depo/görev kapsamı DIŞINDADIR).
 # =============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
@@ -173,3 +195,129 @@ spec:
               - key: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
                 operator: Equals
                 value: ""
+
+    # --- Onay annotation'larını YALNIZCA platform-admins yazabilir (code
+    # review #11) — Tenant için 2 kural, PostgreSQLInstance için 2 kural.
+    - name: only-admins-set-deletion-approved-by-tenant
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: UPDATE
+          - key: "{{ request.object.metadata.annotations.\"platform.internal/deletion-approved-by\" || '' }}"
+            operator: NotEquals
+            value: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-by\" || '' }}"
+      validate:
+        message: >-
+          "platform.internal/deletion-approved-by" annotation'ını yalnızca
+          platform-admins grubundaki kullanıcılar (veya ArgoCD'nin GitOps
+          akışı) ekleyebilir/değiştirebilir.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"
+
+    - name: only-admins-set-deletion-approved-reason-tenant
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: UPDATE
+          - key: "{{ request.object.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
+            operator: NotEquals
+            value: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
+      validate:
+        message: >-
+          "platform.internal/deletion-approved-reason" annotation'ını
+          yalnızca platform-admins grubundaki kullanıcılar (veya ArgoCD'nin
+          GitOps akışı) ekleyebilir/değiştirebilir.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"
+
+    - name: only-admins-set-deletion-approved-by-postgres
+      match:
+        any:
+          - resources:
+              kinds:
+                - PostgreSQLInstance
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: UPDATE
+          - key: "{{ request.object.metadata.annotations.\"platform.internal/deletion-approved-by\" || '' }}"
+            operator: NotEquals
+            value: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-by\" || '' }}"
+      validate:
+        message: >-
+          "platform.internal/deletion-approved-by" annotation'ını yalnızca
+          platform-admins grubundaki kullanıcılar (veya ArgoCD'nin GitOps
+          akışı) ekleyebilir/değiştirebilir.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"
+
+    - name: only-admins-set-deletion-approved-reason-postgres
+      match:
+        any:
+          - resources:
+              kinds:
+                - PostgreSQLInstance
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: UPDATE
+          - key: "{{ request.object.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
+            operator: NotEquals
+            value: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
+      validate:
+        message: >-
+          "platform.internal/deletion-approved-reason" annotation'ını
+          yalnızca platform-admins grubundaki kullanıcılar (veya ArgoCD'nin
+          GitOps akışı) ekleyebilir/değiştirebilir.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"

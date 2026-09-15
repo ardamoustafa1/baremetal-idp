@@ -7,12 +7,45 @@ spec:
   type: team
   children: []
 ---
+# DÜZELTME (Faz 12k, code review #12): bu grup ÖNCEDEN "acme" adındaydı —
+# ama `compositions/tenant/function.k`'nin ürettiği catalog-info.yaml
+# (`_catalogInfoYaml`, bkz. o dosyanın §8'i) her tenant için
+# `spec.owner: team-${teamName}` (ör. "team-acme") YAZIYOR, "acme" DEĞİL.
+# Component→owner Group ilişkisi bu isim UYUŞMAZLIĞI yüzünden HİÇ
+# ÇÖZÜLEMİYORDU — Backstage'in kendi katalog GRAFİĞİNDE tenant Component'i
+# "sahipsiz" görünüyordu. `team-<teamName>` deseni, bu composition'ın
+# ÜRETTİĞİ GERÇEK değerle EŞLEŞECEK şekilde seçildi (yeni bir kural İCAT
+# EDİLMEDİ — var olan, composition'ın ZATEN kullandığı deseni izler).
 apiVersion: backstage.io/v1alpha1
 kind: Group
 metadata:
-  name: acme
-  description: Örnek tenant ekibi — gerçek ekipler kendi Group entity'lerini ekler
+  name: team-acme
+  description: >-
+    Örnek tenant ekibi (teamName=acme) — gerçek ekipler kendi Group
+    entity'lerini "team-<teamName>" deseniyle ekler (bkz. compositions/
+    tenant/function.k §8'in ürettiği catalog-info.yaml'ın owner alanı).
 spec:
   type: team
   parent: platform-team
   children: []
+
+# =============================================================================
+# DÜZELTME (Faz 12k, code review #12): "OIDC grup senkronizasyonu" — bu
+# repo'nun DİĞER yerlerinde (Kyverno politikaları, K8s RBAC, `compositions/
+# tenant/function.k`'nin `oidcGroup` alanı) sürekli bahsedilen, Keycloak
+# gruplarını Backstage'in KENDİ katalog Group entity'leriyle OTOMATİK
+# eşitleyen bir "org data provider" — BU REPODA HİÇ YAZILMADI. Bu dosyadaki
+# Group/User entity'leri TAMAMEN STATİK, ELLE BAKIMI YAPILAN örnek verilerdir
+# (kod incelemesinde AÇIKÇA bulunan bir boşluk). `platform/backstage/
+# portal/packages/backend/src/crossplane.ts`'in tenant-ownership kontrolü
+# (Faz 12g) BU statik catalog verisine dayanır — GERÇEK bir Keycloak grup
+# senkronizasyonu (ör. `@backstage/plugin-catalog-backend-module-*` bir
+# OIDC/LDAP org data provider'ı) KURULANA KADAR, YENİ bir tenant her
+# oluşturulduğunda bu dosyaya (VEYA eşdeğer bir dinamik mekanizmaya) KARŞILIK
+# gelen `team-<teamName>` Group entity'sinin ELLE eklenmesi GEREKİR — aksi
+# halde o tenant'ın GERÇEK kullanıcıları `crossplane.ts`'in ownership
+# kontrolünden HER ZAMAN 403 alır (Backstage'in `ownershipEntityRefs`'i
+# hiçbir zaman o grubu İÇERMEZ, çünkü grup KATALOGDA YOK). Bu, bilinçli bir
+# teknik borçtur — AYRI bir görev/faz olarak işaretlenmiştir (bkz.
+# PLATFORM_CONTEXT.md Faz 12k günlüğü).
+# =============================================================================

@@ -1,0 +1,79 @@
+# =============================================================================
+# Velero — Rook-Ceph RGW (birincil) backend, isteğe bağlı küme-dışı (ikincil)
+# hedef. Faz 12h, code review #11/#12'nin çözümü.
+#
+# S3 kimlik bilgileri BURADA YOK — Loki/Tempo deseniyle AYNI (bkz.
+# observability/loki/values.yaml.tpl'in başlık yorumu): `06-velero.sh`,
+# `rook-ceph` namespace'indeki OBC Secret'ını okuyup `velero` namespace'inde
+# bir Secret üretir; bu dosya yalnızca o Secret'ın adını/profil anahtarlarını
+# referans alır. `${VELERO_OFFSITE_*}` bloğu YALNIZCA `VELERO_OFFSITE_ENABLED=
+# true` ayarlandığında ANLAMLI olur (bkz. .env.example) — script bu durumda
+# İKİNCİ bir profili AYNI Secret'a ekler.
+#
+# CSI VOLUME SNAPSHOT ENTEGRASYONU BİLİNÇLİ OLARAK KAPSAM DIŞI (bkz. docs/
+# runbooks/disaster-recovery.md §3.1/§8a — GERÇEK bir DR tatbikatında CNPG
+# Postgres verisinin Velero ile restore EDİLEMEDİĞİ CANLI olarak kanıtlandı;
+# bu, snapshot.storage.k8s.io CRD'lerinin/VolumeSnapshotClass'ların HİÇ
+# kurulu olmamasından kaynaklanıyor ve o runbook'ta AYRI, sonraki bir iş
+# olarak zaten işaretli). Bu kurulum K8s OBJE yedeklemesini (namespace,
+# RBAC, Secret, CRD, Certificate/Issuer vb.) GERÇEK ve ÇALIŞIR kılar — PV
+# İÇERİĞİ için CNPG'nin KENDİ Barman/PITR mekanizması (compositions/
+# postgresql/function.k §3) birincil, bağımsız yoldur.
+# =============================================================================
+
+initContainers:
+  - name: velero-plugin-for-aws
+    image: velero/velero-plugin-for-aws:v1.11.1
+    imagePullPolicy: IfNotPresent
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: 500m, memory: 256Mi}
+
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: velero-backups
+      credential:
+        name: velero-credentials
+        key: cloud
+      config:
+        region: default
+        profile: default
+        s3Url: "http://rook-ceph-rgw-platform-store.rook-ceph.svc.cluster.local:80"
+        s3ForcePathStyle: "true"
+        insecureSkipTLSVerify: "true"   # RGW henüz TLS'siz (aynı teknik borç, bkz. PLATFORM_CONTEXT)
+  # NOT: volumeSnapshotLocation BİLİNÇLİ OLARAK BOŞ — yukarıdaki "CSI volume
+  # snapshot entegrasyonu kapsam dışı" notuna bakın. Boş bırakmak Velero'nun
+  # K8s obje yedeklemesini ENGELLEMEZ, yalnızca PV snapshot alma girişimini
+  # atlar (spec.defaultVolumesToFsBackup de KASITLI OLARAK false — aksi
+  # halde her backup, snapshot altyapısı olmadan dosya-seviyesi (fs-backup/
+  # restic) bir PV kopyalama girişimine kalkışır ve CNPG'nin KENDİ, tutarlı
+  # PITR mekanizmasıyla ÇAKIŞIR).
+  volumeSnapshotLocation: []
+
+deployNodeAgent: false   # restic/kopia dosya-seviyesi yedekleme — yukarıdaki NOT ile aynı gerekçeyle kapalı
+
+credentials:
+  useSecret: true
+  existingSecret: velero-credentials
+  existingSecretKey: cloud
+
+schedules:
+  # DÜZELTME (Faz 12h, code review #12): "kabul edilen veri kaybı" (RPO)
+  # burada SOMUT hale getiriliyor — bkz. control-plane/velero/README.md
+  # "RPO/RTO" bölümü. Günlük 03:00 UTC (docs/runbooks/disaster-recovery.md
+  # §0'ın ZATEN belirttiği zamanlama ile AYNI — yeni bir karar İCAT
+  # EDİLMEDİ, var olan tasarım burada GERÇEKTEN uygulandı).
+  daily:
+    schedule: "0 3 * * *"
+    useOwnerReferencesInBackup: false
+    template:
+      storageLocation: default
+      ttl: "720h"   # 30 gün saklama
+      includedNamespaces: ["*"]
+      includeClusterResources: true
