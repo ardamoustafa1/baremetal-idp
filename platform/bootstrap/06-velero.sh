@@ -226,6 +226,14 @@ verify_velero() {
 #    doğrula (günlük Schedule'ın 03:00'ı beklemeden, KURULUMUN GERÇEKTEN
 #    çalıştığını KANITLAR — yalnızca Schedule/BackupStorageLocation
 #    nesnelerinin VAR OLMASI, backup'ın GERÇEKTEN alınabildiğini KANITLAMAZ).
+#
+# BİLİNÇLİ SINIR (Faz 12m, code review #9'un doğru tespit ettiği): bu test
+# YALNIZCA `velero` namespace'inin KENDİ K8s objelerini yedekler VE HİÇBİR
+# RESTORE denemesi YAPMAZ — PostgreSQL verisinin (Barman/offsite-sync) veya
+# offsite kurtarma yolunun ÇALIŞTIĞINI KANITLAMAZ. GERÇEK bir restore
+# tatbikatı (kaynak Ceph erişilemezken offsite'tan geri dönme dahil)
+# docs/runbooks/disaster-recovery.md'nin kapsamındadır ve bu script'in
+# YERİNE GEÇMEZ.
 # =============================================================================
 run_backup_smoke_test() {
   step "3/5  Uçtan uca test: on-demand backup"
@@ -248,12 +256,43 @@ spec:
   ttl: 1h0m0s
 EOF
 
-  wait_for "Backup '${name}' Completed" 180 5 \
-    bash -c "kubectl -n velero get backup ${name} -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Completed"
+  # DÜZELTME (Faz 12m, code review #9 — YÜKSEK): `grep -q Completed`, TAM
+  # eşitlik kontrolü DEĞİLDİR — `PartiallyFailed` gibi bir durum da
+  # (kısmi başarısızlık, Velero'nun GERÇEK, belgelenmiş bir terminal
+  # fazı) bu regex'i EŞLEŞTİRMEZ (doğru), ama `PartiallyCompleted` gibi
+  # VARSAYIMSAL bir gelecekteki faz adı YANLIŞLIKLA "başarılı" sayılırdı —
+  # ayrıca `PartiallyFailed` GİBİ bir TERMİNAL başarısızlık durumunda
+  # döngü GERÇEK hatayı hemen RAPORLAMAK yerine 180 saniye BOŞ YERE
+  # beklemeye devam ederdi. Artık: (a) faza TAM EŞİTLİKLE bakılır, (b)
+  # bilinen bir TERMİNAL başarısızlık fazı görülürse döngü HEMEN durur,
+  # (c) `status.errors`/`status.warnings` SAYAÇLARI da kontrol edilir
+  # (phase="Completed" olsa BİLE errors>0 olabilir — Velero bunu "kısmi"
+  # bir başarı olarak işaretleyebilir).
+  local _backup_deadline=$(( $(date +%s) + 180 )) _phase _errors
+  while true; do
+    _phase="$(kubectl -n velero get backup "${name}" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    case "${_phase}" in
+      Completed) break ;;
+      Failed|PartiallyFailed|FailedValidation)
+        echo "HATA: Backup '${name}' terminal başarısızlık fazına ulaştı: ${_phase}" >&2
+        kubectl -n velero describe backup "${name}" >&2 || true
+        exit 1
+        ;;
+    esac
+    (( $(date +%s) < _backup_deadline )) || {
+      echo "HATA: Backup '${name}' 180s içinde Completed olmadı (son faz: ${_phase:-boş})" >&2
+      kubectl -n velero describe backup "${name}" >&2 || true
+      exit 1
+    }
+    sleep 5
+  done
+  _errors="$(kubectl -n velero get backup "${name}" -o jsonpath='{.status.errors}' 2>/dev/null || echo 0)"
+  [[ -z "${_errors}" || "${_errors}" == "0" ]] \
+    || { echo "HATA: Backup '${name}' phase=Completed ama status.errors=${_errors} (kısmi başarısızlık)" >&2; exit 1; }
 
   log "\$ kubectl -n velero describe backup ${name}"
   kubectl -n velero describe backup "${name}" | sed 's/^/         /'
-  ok "On-demand backup GERÇEKTEN tamamlandı — Velero → Ceph RGW yolu çalışıyor"
+  ok "On-demand backup GERÇEKTEN tamamlandı (phase=Completed, errors=0) — Velero → Ceph RGW yolu çalışıyor"
 
   kubectl -n velero delete backup "${name}" --wait=false >/dev/null 2>&1 || true
 }
@@ -332,11 +371,21 @@ setup_postgres_offsite_sync() {
       continue
     fi
 
+    # DÜZELTME (Faz 12m, code review #8 — YÜKSEK): `job_name` ÖNCEDEN
+    # yalnızca ilk 52 karaktere KESİLİYORDU — iki FARKLI uzun bucket adı
+    # (ör. iki farklı tenant'ın uzun teamName'leri) AYNI ilk 52 karaktere
+    # sahipse, İKİNCİ CronJob/Secret BİRİNCİYİ SESSİZCE ÜZERİNE YAZARDI
+    # (`kubectl apply` idempotent'tir — "zaten var" hatası VERMEZ, aynı
+    # ada SAHİP farklı bir kaynağı GÜNCELLER) — bir tenant'ın yedek
+    # kimlik bilgisi/hedefi BAŞKA bir tenant'ınkiyle DEĞİŞTİRİLİR, o
+    # tenant'ın yedeği SESSİZCE senkronize edilmeyi BIRAKIR. ÇÖZÜM: TAM
+    # bucket_name'in SHA-256'sının ilk 8 hex karakteri, kesilmiş adın
+    # SONUNA eklenir — iki FARKLI bucket adının AYNI (kesilmiş taban +
+    # hash) çifti üretmesi için ÖNCE ilk ~43 karakterde ÇAKIŞMALARI HEM
+    # DE SHA-256'da çakışması gerekir (pratikte imkansız).
+    local bucket_hash; bucket_hash="$(printf '%s' "${bucket_name}" | sha256sum | cut -c1-8)"
     local job_name="offsite-sync-${bucket_name}"
-    # DNS-1123 uyumu için normalize et (bucket adları zaten alt çizgi
-    # İÇERMEZ — tenant/postgres adlandırma kuralları bunu garanti eder —
-    # ama uzunluk sınırına karşı güvenlik payı bırakılır).
-    job_name="${job_name:0:52}"
+    job_name="${job_name:0:43}-${bucket_hash}"
 
     kubectl -n offsite-sync create secret generic "${job_name}-creds" \
       --from-literal="SRC_ACCESS_KEY=${key}" \
@@ -346,7 +395,7 @@ setup_postgres_offsite_sync() {
       --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
     JOB_NAME="${job_name}" BUCKET_NAME="${bucket_name}" \
-      envsubst '${JOB_NAME} ${BUCKET_NAME} ${CEPH_OBJECTSTORE_NAME} ${VELERO_OFFSITE_S3_URL} ${VELERO_OFFSITE_S3_REGION}' \
+      envsubst '${JOB_NAME} ${BUCKET_NAME} ${CEPH_OBJECTSTORE_NAME} ${VELERO_OFFSITE_S3_URL} ${VELERO_OFFSITE_S3_REGION} ${OFFSITE_SYNC_RCLONE_IMAGE}' \
       < "${VELERO_DIR}/templates/offsite-sync-cronjob.yaml.tpl" \
       | kubectl apply -f -
 
@@ -355,6 +404,209 @@ setup_postgres_offsite_sync() {
   done <<< "${obcs}"
 
   ok "PostgreSQL offsite sync: ${synced} bucket için CronJob kuruldu (günlük 04:00 UTC — Velero'nun K8s obje senkronundan 1 saat SONRA)"
+}
+
+# =============================================================================
+# 5. offsite-sync-discovery CronJob'u — Faz 12m, code review #6'nın çözümü.
+#
+# GERÇEK RİSK: `setup_postgres_offsite_sync()` (yukarıda) yalnızca
+# ÇALIŞTIĞI ANDA VAR OLAN postgres backup bucket'larını keşfeder — SONRADAN
+# oluşturulan bir tenant/Postgres instance'ı için bu adımın (`06-velero.sh
+# --only postgres-offsite-sync`) İNSAN tarafından ELLE tekrar çalıştırılması
+# GEREKİRDİ. Unutulursa, self-servis olarak "hazır" görünen bir prod
+# veritabanının BAĞIMSIZ (offsite) yedeği HİÇ OLMAZ — sessizce.
+#
+# ÇÖZÜM: yukarıdaki KEŞİF+CronJob-ÜRETME mantığının AYNISINI (bash yerine
+# POSIX sh ile, kubectl + temel coreutils kullanarak) HER SAAT çalıştıran
+# bir CronJob küme İÇİNE kuruluyor — insan hafızasına bağımlı MANUEL bir
+# adım, kendi kendini periyodik olarak TEKRARLAYAN bir mekanizmaya dönüşüyor.
+#
+# GÜVENLİK NOTU (dürüstçe işaretli): bu CronJob'un ServiceAccount'ı
+# `secrets` kaynağını KÜME GENELİNDE `get` edebilmelidir — RBAC, "yalnızca
+# postgres backup OBC'lerinin secret'ları" gibi İÇERİK-tabanlı bir kısıtı
+# İFADE EDEMEZ (yalnızca kaynak TÜRÜ/ad kalıbı, ad kalıbı da RBAC'ta YOK).
+# Bu GERÇEK, kabul edilen bir blast-radius artışıdır — YAZMA yetkisi
+# YALNIZCA `offsite-sync` namespace'iyle SINIRLI (cluster-wide DEĞİL).
+# =============================================================================
+setup_offsite_sync_discovery_cronjob() {
+  step "5/5  offsite-sync-discovery CronJob'u (saatlik otomatik keşif)"
+
+  if [[ "${VELERO_OFFSITE_ENABLED}" != "true" ]]; then
+    log "  VELERO_OFFSITE_ENABLED=false — bu adım atlanıyor."
+    return 0
+  fi
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log "[dry-run] offsite-sync-discovery RBAC + ConfigMap + CronJob uygulanacaktı"
+    return 0
+  fi
+
+  kubectl create namespace offsite-sync --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+  # --- RBAC: okuma küme-geneli (bkz. yukarıdaki GÜVENLİK NOTU), yazma
+  # yalnızca offsite-sync namespace'i ile SINIRLI.
+  cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: offsite-sync-discovery
+  namespace: offsite-sync
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: offsite-sync-discovery
+rules:
+  - apiGroups: ["objectbucket.io"]
+    resources: ["objectbucketclaims"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: offsite-sync-discovery
+subjects:
+  - kind: ServiceAccount
+    name: offsite-sync-discovery
+    namespace: offsite-sync
+roleRef:
+  kind: ClusterRole
+  name: offsite-sync-discovery
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: offsite-sync-discovery
+  namespace: offsite-sync
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: offsite-sync-discovery
+  namespace: offsite-sync
+subjects:
+  - kind: ServiceAccount
+    name: offsite-sync-discovery
+    namespace: offsite-sync
+roleRef:
+  kind: Role
+  name: offsite-sync-discovery
+  apiGroup: rbac.authorization.k8s.io
+EOF
+
+  # --- Discovery CronJob'unun KENDİ uygulayacağı per-bucket şablonu — AYNI
+  # `offsite-sync-cronjob.yaml.tpl`, ama `JOB_NAME`/`BUCKET_NAME` BİLİNÇLİ
+  # OLARAK ÇÖZÜLMEDEN bırakılıyor (discovery script'i bunları HER bucket
+  # için KENDİSİ `sed` ile dolduracak).
+  local work; work="$(mktemp -d)"
+  envsubst '${CEPH_OBJECTSTORE_NAME} ${VELERO_OFFSITE_S3_URL} ${VELERO_OFFSITE_S3_REGION} ${OFFSITE_SYNC_RCLONE_IMAGE}' \
+    < "${VELERO_DIR}/templates/offsite-sync-cronjob.yaml.tpl" \
+    > "${work}/cronjob-template.yaml"
+
+  cat > "${work}/discover.sh" <<'DISCOVER_EOF'
+#!/bin/sh
+set -eu
+echo "[discovery] postgres backup OBC'leri taranıyor..."
+kubectl get objectbucketclaim --all-namespaces \
+  -l platform.internal/component=postgresql \
+  -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.bucketName}{"\n"}{end}' \
+  > /tmp/obcs.txt || true
+
+if [ ! -s /tmp/obcs.txt ]; then
+  echo "[discovery] hiçbir postgres backup OBC'si bulunamadı."
+  exit 0
+fi
+
+while read -r ns obc_name bucket_name; do
+  [ -z "${ns:-}" ] && continue
+  key="$(kubectl -n "${ns}" get secret "${obc_name}" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d || true)"
+  secret="$(kubectl -n "${ns}" get secret "${obc_name}" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d || true)"
+  if [ -z "${key}" ] || [ -z "${secret}" ]; then
+    echo "[discovery] ${ns}/${obc_name}: kimlik bilgisi okunamadı, atlanıyor"
+    continue
+  fi
+
+  bucket_hash="$(printf '%s' "${bucket_name}" | sha256sum | cut -c1-8)"
+  base_name="offsite-sync-${bucket_name}"
+  job_name="$(printf '%s' "${base_name}" | cut -c1-43)-${bucket_hash}"
+
+  kubectl -n offsite-sync create secret generic "${job_name}-creds" \
+    --from-literal="SRC_ACCESS_KEY=${key}" \
+    --from-literal="SRC_SECRET_KEY=${secret}" \
+    --from-literal="DST_ACCESS_KEY=${DST_ACCESS_KEY}" \
+    --from-literal="DST_SECRET_KEY=${DST_SECRET_KEY}" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+  sed -e "s|\${JOB_NAME}|${job_name}|g" -e "s|\${BUCKET_NAME}|${bucket_name}|g" \
+    /etc/offsite-sync/cronjob-template.yaml | kubectl apply -f -
+
+  echo "[discovery] offsite sync CronJob: ${job_name} (bucket: ${bucket_name}, kaynak ns: ${ns})"
+done < /tmp/obcs.txt
+DISCOVER_EOF
+
+  kubectl -n offsite-sync create configmap offsite-sync-discovery \
+    --from-file="cronjob-template.yaml=${work}/cronjob-template.yaml" \
+    --from-file="discover.sh=${work}/discover.sh" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+  kubectl -n offsite-sync create secret generic offsite-sync-discovery-dst-creds \
+    --from-literal="DST_ACCESS_KEY=${VELERO_OFFSITE_S3_ACCESS_KEY}" \
+    --from-literal="DST_SECRET_KEY=${VELERO_OFFSITE_S3_SECRET_KEY}" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+  rm -rf "${work}"
+
+  cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: offsite-sync-discovery
+  namespace: offsite-sync
+  labels:
+    platform.internal/managed-by: velero-bootstrap
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          serviceAccountName: offsite-sync-discovery
+          restartPolicy: OnFailure
+          containers:
+            - name: discover
+              image: ${OFFSITE_SYNC_DISCOVERY_IMAGE}
+              command: ["/bin/sh", "/etc/offsite-sync/discover.sh"]
+              envFrom:
+                - secretRef: {name: offsite-sync-discovery-dst-creds}
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {cpu: 200m, memory: 128Mi}
+              volumeMounts:
+                - {name: script, mountPath: /etc/offsite-sync}
+          volumes:
+            - name: script
+              configMap:
+                name: offsite-sync-discovery
+                defaultMode: 0555
+EOF
+
+  ok "offsite-sync-discovery CronJob'u kuruldu (saatlik, 0 * * * *) — YENİ Postgres instance'ları artık ELLE re-run GEREKTİRMEZ"
 }
 
 # =============================================================================
@@ -391,10 +643,11 @@ main() {
     return 0
   fi
 
-  should_run obc            && apply_obc_and_secret
-  should_run velero         && install_velero
+  should_run obc                    && apply_obc_and_secret
+  should_run velero                 && install_velero
   should_run schedule-test          && run_backup_smoke_test
   should_run postgres-offsite-sync  && setup_postgres_offsite_sync
+  should_run offsite-sync-discovery && setup_offsite_sync_discovery_cronjob
 
   summary
   ok "Velero kurulumu tamamlandı."

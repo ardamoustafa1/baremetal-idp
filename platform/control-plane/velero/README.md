@@ -71,18 +71,32 @@ uç nokta yazmamak içindir, "gerekli değil" anlamına GELMEZ.
   bkz. `compositions/postgresql/README.md` "Restore" bölümü (varsa) /
   CNPG'nin resmi `bootstrap.recovery` dokümantasyonu.
 - Gerçek bir donanım/Ceph-kaybı DR tatbikatı (bu ortamda fiziksel disk yok).
-- `setup_postgres_offsite_sync()`'in GERÇEK bir Ceph RGW + offsite S3'e
-  karşı UÇTAN UCA çalıştırılması (statik olarak tasarlandı, `amazon/aws-cli`
-  imajının syntax'ı ve `aws s3 sync` komutunun doğruluğu incelendi ama
-  canlı doğrulanmadı).
+- `setup_postgres_offsite_sync()`'in ve `setup_offsite_sync_discovery_cronjob()`'un
+  (Faz 12m) GERÇEK bir Ceph RGW + offsite S3'e karşı UÇTAN UCA çalıştırılması
+  (statik olarak tasarlandı; `rclone`'un `lsd`/`mkdir`/`sync`/`check`
+  komutlarının syntax'ı ve şablon render'ı incelendi — `envsubst` + YAML
+  parse ile DOĞRULANDI — ama canlı bir Ceph RGW/offsite S3 çiftine karşı
+  ÇALIŞTIRILMADI).
 - Kaynak Ceph kullanılamazken (yalnızca offsite hedeften) bir Postgres
   restore denemesi — `compositions/postgresql/README.md`'nin "Restore"
   bölümündeki `externalClusters.barmanObjectStore` bloğu, `endpointURL`'i
   offsite S3'e çevirerek TEORİK OLARAK bu senaryoda da çalışmalıdır (aynı
   Barman format'ı, farklı bir S3 uç noktası) ama bu HİÇ denenmedi.
-- **Bilinçli sınır:** `setup_postgres_offsite_sync()` yalnızca ÇALIŞTIĞI
-  ANDA var olan postgres backup bucket'larını keşfeder — SONRADAN
-  oluşturulan tenant'lar için bu adımın (`06-velero.sh --only
-  postgres-offsite-sync`) tekrar çalıştırılması gerekir (Vault TLS
-  yenilemesiyle AYNI "periyodik operatör eylemi" deseni). Otomatik,
-  sürekli bir reconciliation İCAT EDİLMEDİ — bilinçli bir kapsam sınırı.
+- Backup smoke test'in (`run_backup_smoke_test()`) Faz 12m'de kesin faz
+  eşitliği + hata sayısı kontrolüne güçlendirilmesi CANLI test edildi
+  (bkz. Faz 12m günlüğü) AMA test hâlâ yalnızca Velero'nun KENDİ namespace'inin
+  K8s objelerini yedekliyor — gerçek bir restore, Postgres verisi veya
+  offsite yolu HİÇBİR ZAMAN test edilmiyor. Bu, `run_backup_smoke_test()`'in
+  KENDİ doc-comment'inde AÇIKÇA işaretli, bilinçli bir kapsam sınırı.
+- ~~**Bilinçli sınır:** `setup_postgres_offsite_sync()` yalnızca ÇALIŞTIĞI
+  ANDA var olan postgres backup bucket'larını keşfeder...~~ **Faz 12m'de
+  ÇÖZÜLDÜ:** `setup_offsite_sync_discovery_cronjob()`, `offsite-sync`
+  namespace'ine SAATLİK çalışan bir CronJob kurar — bu CronJob AYNI keşif
+  mantığını (postgres backup OBC'lerini `platform.internal/component=postgresql`
+  etiketiyle listeler, her biri için offsite-sync CronJob/Secret'ını
+  OTOMATİK oluşturur/günceller) küme İÇİNDEN, insan müdahalesi OLMADAN
+  periyodik tekrarlar. Kalan bilinçli sınır: SONRADAN oluşturulan bir
+  Postgres instance'ı artık EN GEÇ 1 SAAT içinde otomatik keşfedilir
+  (öncesinde: asla, elle re-run olmadan) — ama HÂLÂ "yedeksiz kalan bir
+  prod veritabanı için ALARM" ÜRETİLMİYOR (yalnızca reconciliation var,
+  gözlemlenebilirlik/alerting entegrasyonu YOK — bu ayrı bir iş).
