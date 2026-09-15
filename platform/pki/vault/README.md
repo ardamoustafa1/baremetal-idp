@@ -112,6 +112,40 @@ observability/resources/certmanager-expiry-rules.yaml`) — bu, Vault'un
 KENDİ sertifikası için AYNI desenin BENZERİ, ayrı bir iş olarak kalır
 (Vault'un sertifikası cert-manager'ın İZLEMEDİĞİ bir yoldan geliyor).
 
+**DÜZELTME (Faz 12l, code review #1):** `enable_vault_tls()` artık pod'ları
+GERÇEKTEN sırayla (standby önce, active en son) SİLİP yeniden oluşturuyor
+ve HER pod'un mounted sertifikasının SHA-256'sını yerel dosyayla
+KARŞILAŞTIRARAK doğruluyor — chart'ın `server.updateStrategyType`
+varsayılanı `OnDelete` olduğu için (Helm render'ıyla doğrulandı), daha
+önceki `kubectl rollout restart` çağrısı bir NO-OP'tu ve pod'lar SESSİZCE
+eski konfigürasyonda kalmaya devam ederdi.
+
+**ESO/cert-manager login testi (üretimde, her yenileme SONRASI ÖNERİLİR,
+bu görevde ÇALIŞTIRILAMADI):**
+
+```bash
+# Vault pod'u yeniden başladıktan SONRA, ESO'nun/cert-manager'ın YENİ
+# sertifikayla auth olabildiğini doğrulayın — yalnızca "Vault HTTPS
+# dinliyor" YETERLİ DEĞİLDİR, istemcilerin GERÇEKTEN login olabildiğini
+# kanıtlamak gerekir:
+kubectl -n tenant-acme-dev delete externalsecret vault-ca-bundle --wait=false 2>/dev/null || true
+kubectl -n tenant-acme-dev annotate issuer tenant-issuer force-resync="$(date +%s)" --overwrite
+kubectl -n tenant-acme-dev wait issuer/tenant-issuer --for=condition=Ready --timeout=60s
+```
+
+---
+
+### Kubernetes auth — `token_reviewer_jwt` rotasyonu (Faz 12l, code review #2)
+
+`auth/kubernetes/config` yazılırken `token_reviewer_jwt` BİLİNÇLİ OLARAK
+BOŞ bırakılır — `=@dosya` sözdizimi dosyanın İÇERİĞİNİ o ANDA okuyup SABİT
+bir string olarak Vault'a yazar, ama Vault'un KENDİ ServiceAccount
+token'ı (projected, TTL'li) kubelet tarafından periyodik olarak
+ROTATE edilir. Alan boş bırakılınca Vault, TokenReview çağrıları için
+KENDİ token dosyasını HER İSTEKTE CANLI okur — rotasyonu otomatik takip
+eder. `tests/e2e/kind-chain/run.sh` bu deseni ZATEN kullanıyordu (bkz.
+resmi Vault dokümantasyonu: https://developer.hashicorp.com/vault/docs/auth/kubernetes).
+
 ---
 
 ## Doğrulama

@@ -98,6 +98,21 @@ spec:
                   message: "teamName değiştirilemez (immutable) — bu alan tenant'ın namespace adının PARÇASIDIR, değişikliği eski namespace'in silinip yenisinin üretilmesine yol açar. Yeni bir Tenant claim'i açın."
                 - rule: "self.environment == oldSelf.environment"
                   message: "environment değiştirilemez (immutable) — AYNI gerekçe: namespace adının PARÇASIDIR, ayrıca prod-tenant-deletion korumasını BY-PASS edebilir. Yeni bir Tenant claim'i açın."
+                # DÜZELTME (Faz 12l, code review #3 — KRİTİK, yetkilendirme
+                # açığı): `tenant-claim-requester` ClusterRole'ü (policies/
+                # rbac/tenant-claim-rbac.yaml) TÜM Tenant claim'leri üzerinde
+                # genel `update`/`patch` veriyor (RBAC, TEK bir claim'i
+                # "başkasınınki" diye AYIRT EDEMEZ) — `04-restrict-tenant-
+                # claim-creation.yaml` de yalnızca CREATE'i kontrol ediyordu.
+                # `oidcGroup` İMMUTABLE OLMADAN, talep yetkisi olan HERHANGİ
+                # bir kullanıcı BAŞKA bir tenant'ın claim'ini `oidcGroup`'unu
+                # KENDİ grubuna çevirecek şekilde güncelleyebilir — composition
+                # bunu O TENANT'IN namespace'indeki admin RoleBinding'ine
+                # (bkz. function.k'nin RoleBinding'i) YANSITIR, yani saldırgan
+                # BAŞKA bir tenant'ın namespace'inde admin olur. `oldSelf`
+                # karşılaştırması bunu STRUCTURAL olarak KAPATIR.
+                - rule: "self.oidcGroup == oldSelf.oidcGroup"
+                  message: "oidcGroup değiştirilemez (immutable) — bu alan tenant'ın namespace'indeki YÖNETİCİ RoleBinding'inin subject'idir; değişikliğine izin vermek başka bir tenant'ın namespace'ine yetkisiz admin erişimi kazandırabilir. Grup değişikliği gerekiyorsa platform-admins ile iletişime geçin (Vault/Keycloak seviyesinde, claim seviyesinde DEĞİL)."
             status:
               type: object
               properties:

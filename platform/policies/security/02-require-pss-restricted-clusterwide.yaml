@@ -96,6 +96,9 @@ spec:
                 # eklenmesi gerekir" diyor; bu bakım adımı ATLANMIŞTI.
                 - cnpg-system
                 - velero
+                # DÜZELTME (Faz 12l, code review #4'ün yan bulgusu):
+                # offsite-sync (Faz 12k) de AYNI bakım hatasına uğramıştı.
+                - offsite-sync
       validate:
         message: >-
           Bu namespace "pod-security.kubernetes.io/{enforce,audit,warn}: restricted"

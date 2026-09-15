@@ -76,3 +76,46 @@ spec:
                   - platform-admins
                   - "oidc:platform-tenant-requesters"
                   - "oidc:platform-admins"
+
+    # DÜZELTME (Faz 12l, code review #3 — KRİTİK, yetkilendirme açığı):
+    # `tenant-claim-rbac.yaml`'daki `tenant-claim-requester` ClusterRole'ü
+    # TÜM Tenant claim'leri üzerinde genel `update`/`patch` veriyor (RBAC bir
+    # claim'i "benimki/başkasınınki" diye AYIRT EDEMEZ). Bu kural OLMADAN,
+    # yetkili HERHANGİ bir requester BAŞKA bir tenant'ın claim'ini
+    # güncelleyebilirdi (ör. `oidcGroup`'unu kendi grubuna çevirip o
+    # tenant'ın namespace'inde admin olmak — `oidcGroup` artık immutable,
+    # bkz. tenant/xrd.yaml, ama quotaTier/networkTier gibi ALANLAR hâlâ
+    # değiştirilebilir kalırdı). Bu kural, bir UPDATE'in yalnızca (a) claim'in
+    # KENDİ oidcGroup'undaki kullanıcılar (gerçek self-servis — kendi
+    # tenant'ını güncellemek), (b) platform-admins, veya (c) ArgoCD'nin
+    # GitOps akışı (asıl denetim PR incelemesinde) tarafından yapılmasına
+    # izin verir.
+    - name: only-owner-or-admin-can-update
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: UPDATE
+      validate:
+        message: >-
+          Bu Tenant claim'i yalnızca KENDİ oidcGroup'undaki kullanıcılar
+          veya platform-admins tarafından güncellenebilir — başka bir
+          tenant'ın claim'ini değiştiremezsiniz.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - "{{ request.oldObject.spec.oidcGroup || '' }}"
+                  - "oidc:{{ request.oldObject.spec.oidcGroup || '' }}"
+                  - platform-admins
+                  - "oidc:platform-admins"

@@ -264,20 +264,55 @@ helm upgrade --install vault hashicorp/vault \
   --set server.affinity="" \
   --set server.livenessProbe.initialDelaySeconds=300 \
   --timeout 5m >/dev/null
-kubectl -n vault rollout restart statefulset/vault
+# DÜZELTME (Faz 12l, code review #1 — KRİTİK, Helm render'ıyla kanıtlandı):
+# bu chart'ın `server.updateStrategyType` VARSAYILANI "OnDelete"dir
+# (`helm template hashicorp/vault ... | grep updateStrategy` ile
+# DOĞRULANDI). `kubectl rollout restart` OnDelete altında bir NO-OP'tur —
+# StatefulSet'in şablonu güncellenir ama VAR OLAN pod'lar KENDİLİĞİNDEN
+# yeniden oluşturulmaz, yalnızca MANUEL silinince. Bu script ÖNCEDEN
+# `rollout restart` çağırıp ardından yalnızca "HTTPS ile yanıt veriyor mu"
+# diye bekliyordu — pod'lar HİÇ silinmediği için bu kontrol ASLA
+# GEÇEMEZDİ (ya da — eğer önceki bir adımda pod'lar farklı bir sebeple
+# zaten silinmiş/yeniden başlamışsa — YANLIŞLIKLA geçip TESADÜFEN
+# çalışıyor GÖRÜNEBİLİRDİ). Şimdi 03-pki.sh:enable_vault_tls() İLE AYNI
+# standby-önce/active-en-son sırayla AÇIKÇA siliniyor ve mounted
+# sertifikanın SHA-256'sı yerel dosyayla KARŞILAŞTIRILARAK doğrulanıyor.
+_new_cert_sha="$(sha256sum "${WORK}/vault-tls.crt" | awk '{print $1}')"
+_active_pod="" ; _standby_pods=()
 for pod in vault-0 vault-1 vault-2; do
-  _tls_deadline=$(( $(date +%s) + 300 ))
-  until kubectl -n vault exec "${pod}" -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status' 2>&1 | grep -qv "connection refused\|dial tcp\|i/o timeout\|x509\|http: server gave HTTP response"; do
-    (( $(date +%s) < _tls_deadline )) || { echo "HATA: ${pod} TLS restart sonrası 5 dakikada HTTPS ile yanıt vermedi" >&2; exit 1; }
-    sleep 3
-  done
-  _tls_sealed_deadline=$(( $(date +%s) + 120 ))
-  until kubectl -n vault exec "${pod}" -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status' 2>&1 | grep -q "Sealed.*false"; do
-    (( $(date +%s) < _tls_sealed_deadline )) || { echo "HATA: ${pod} TLS restart sonrası transit ile otomatik unseal olmadı (120s)" >&2; exit 1; }
-    sleep 3
-  done
+  _mode="$(kubectl -n vault exec "${pod}" -- sh -c 'VAULT_ADDR=http://127.0.0.1:8200 vault status' 2>/dev/null | awk '/^HA Mode/ {print $NF}')"
+  if [[ "${_mode}" == "active" ]]; then _active_pod="${pod}"; else _standby_pods+=("${pod}"); fi
 done
-log "   ✅ Vault listener HTTPS (pki-int-dev/roles/vault-server'dan imzalı, tüm pod'lar unsealed)"
+[[ -n "${_active_pod}" ]] || { echo "HATA: hiçbir vault pod'u 'active' HA Mode raporlamadı" >&2; exit 1; }
+
+_restart_and_verify_vault_pod() {
+  local pod="$1"
+  kubectl -n vault delete pod "${pod}" --wait=true --timeout=120s
+  _running_deadline=$(( $(date +%s) + 180 ))
+  until kubectl -n vault get pod "${pod}" -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; do
+    (( $(date +%s) < _running_deadline )) || { echo "HATA: ${pod} 180s içinde yeniden Running olmadı" >&2; exit 1; }
+    sleep 5
+  done
+  _tls_deadline=$(( $(date +%s) + 180 ))
+  until kubectl -n vault exec "${pod}" -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status' 2>&1 | grep -qv "connection refused\|dial tcp\|i/o timeout\|x509\|http: server gave HTTP response"; do
+    (( $(date +%s) < _tls_deadline )) || { echo "HATA: ${pod} yeniden oluşturulduktan sonra 180s içinde HTTPS ile yanıt vermedi" >&2; exit 1; }
+    sleep 3
+  done
+  _sealed_deadline=$(( $(date +%s) + 120 ))
+  until kubectl -n vault exec "${pod}" -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status' 2>&1 | grep -q "Sealed.*false"; do
+    (( $(date +%s) < _sealed_deadline )) || { echo "HATA: ${pod} transit ile otomatik unseal olmadı (120s)" >&2; exit 1; }
+    sleep 3
+  done
+  _served_sha="$(kubectl -n vault exec "${pod}" -- cat /vault/userconfig/vault-server-tls/tls.crt 2>/dev/null | sha256sum | awk '{print $1}')"
+  [[ "${_served_sha}" == "${_new_cert_sha}" ]] || { echo "HATA: ${pod} mounted sertifika YENİ sertifikayla eşleşmiyor (beklenen ${_new_cert_sha}, bulunan ${_served_sha:-boş})" >&2; exit 1; }
+  log "   ✅ ${pod}: yeniden oluşturuldu, unsealed, YENİ sertifikayı sunuyor (sha256 doğrulandı)"
+}
+
+for pod in "${_standby_pods[@]}"; do
+  _restart_and_verify_vault_pod "${pod}"
+done
+_restart_and_verify_vault_pod "${_active_pod}"
+log "   ✅ Vault listener HTTPS (pki-int-dev/roles/vault-server'dan imzalı, tüm pod'lar unsealed, sertifika doğrulandı)"
 # Bundan SONRAKİ tüm `vault` CLI çağrıları VAULT_ADDR=https://127.0.0.1:8200
 # VAULT_SKIP_VERIFY=true İLE yapılmalıdır (aşağıda TUTARLI şekilde uygulandı).
 

@@ -396,11 +396,26 @@ EOF
   vexec auth enable kubernetes 2>/dev/null || log "  auth/kubernetes zaten etkin"
 
   # --- Vault kendi pod'unun içinden kendi in-cluster ayarlarını okur ------
+  # DÜZELTME (Faz 12l, code review #2 — YÜKSEK): `token_reviewer_jwt=@dosya`
+  # sözdizimi, dosyanın İÇERİĞİNİ o ANDA OKUYUP Vault'un auth config'ine
+  # SABİT bir STRING olarak YAZAR — projected ServiceAccount token'ları
+  # (bu kubeadm kubelet varsayılanı) TTL'li ve KISA ÖMÜRLÜDÜR (tipik
+  # varsayılan ~1 saat, kubelet dosyayı arka planda YENİLER ama Vault'un
+  # ÖNCEDEN YAKALADIĞI DEĞER buna bağlı DEĞİLDİR). Süre dolunca, Vault'un
+  # BAŞKA JWT'leri (ESO/cert-manager/tenant Job'ları) doğrulamak için
+  # Kubernetes TokenReview API'sine yaptığı çağrılar "Unauthorized" ile
+  # BAŞARISIZ OLMAYA BAŞLAR — HİÇBİR YENİ login çalışmaz. Resmi Vault
+  # dokümantasyonu (https://developer.hashicorp.com/vault/docs/auth/
+  # kubernetes): `token_reviewer_jwt` BOŞ BIRAKILIRSA Vault, KENDİ pod'unun
+  # ServiceAccount token'ını doğrudan dosyadan (canlı, HER istek için
+  # YENİDEN okunur — kubelet'in rotasyonunu OTOMATİK takip eder) kullanır.
+  # `tests/e2e/kind-chain/run.sh` bu alanı ZATEN HİÇ YAZMIYORDU (bilerek
+  # ya da tesadüfen) — bu, GERÇEKTEN çalışan bir e2e testinde KANITLANMIŞ
+  # doğru davranışın burada da uygulanmasıdır.
   vexec write auth/kubernetes/config \
     kubernetes_host="https://kubernetes.default.svc:443" \
-    token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token \
     kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-  ok "auth/kubernetes/config yazıldı"
+  ok "auth/kubernetes/config yazıldı (token_reviewer_jwt BİLİNÇLİ OLARAK boş — Vault kendi SA token'ını CANLI/rotasyon-takipli okur)"
 
   # --- KV v2 (Faz 7 eklentisi): PostgreSQL composition'ının ExternalSecret/
   # PushSecret round-trip'i için (bkz. compositions/postgresql/function.k §7).
@@ -850,39 +865,80 @@ enable_vault_tls() {
   kubectl -n vault cp "${work}/vault-ca-chain.pem" "vault-0:/tmp/vault-ca-chain.pem"
   vexec kv put -mount=kv platform/vault-ca-bundle "ca.crt=@/tmp/vault-ca-chain.pem"
   ok "  kv/platform/vault-ca-bundle yazıldı (tenant Issuer'larının caBundleSecretRef'i için)"
+  # NOT: "${work}" BURADA SİLİNMİYOR — aşağıdaki pod-başına yeniden başlatma
+  # doğrulaması "${work}/tls.crt"nin (yeni sertifika) HASH'ini KULLANIR;
+  # fonksiyonun SONUNDA silinir.
 
-  rm -rf "${work}"
-
-  # --- 4) helm upgrade — TLS overlay. --wait KULLANILMIYOR (install_vault()
-  # ile AYNI gerekçe: rolling restart sırasında pod'lar GEÇİCİ olarak
-  # sealed/not-ready görünür; unseal aşağıda ayrıca doğrulanır).
+  # --- 4) helm upgrade — TLS overlay.
   helm upgrade --install vault hashicorp/vault \
     --namespace vault --version "${VAULT_CHART_VERSION}" \
     -f "${VAULT_DIR}/values.yaml" \
     -f "${VAULT_DIR}/values-tls.yaml" \
     --timeout 10m
 
-  # DÜZELTME (Faz 12j, code review #7): bu bir YENİLEME geçişiyse
-  # (`_tls_was_live=true`), StatefulSet spec'i (values.yaml/values-tls.yaml
-  # İÇERİĞİ) helm upgrade'den ÖNCEKİYLE AYNI olduğu için `helm upgrade`
-  # KENDİLİĞİNDEN bir rollout TETİKLEMEZ — Secret İÇERİĞİ değişse bile
-  # StatefulSet'in POD ŞABLONU değişmediğinden Kubernetes pod'ları YENİDEN
-  # OLUŞTURMAZ. Vault process'i ise TLS sertifikasını yalnızca BAŞLANGIÇTA
-  # okur (bir restart olmadan yeni Secret içeriğini FARK ETMEZ) — bu yüzden
-  # yenileme geçişinde rollout'u BURADA AÇIKÇA tetikliyoruz. İlk
-  # etkinleştirme geçişinde bu KOMUT GEREKSİZDİR (helm upgrade zaten YENİ
-  # bir StatefulSet spec'i uyguladığı için kendiliğinden rollout tetikler)
-  # ama tekrar çağırmak ZARARSIZDIR (idempotent, no-op).
-  if [[ "${_tls_was_live}" == "true" ]]; then
-    log "  Yenileme geçişi: yeni sertifikanın pod'lara ULAŞMASI için rollout AÇIKÇA tetikleniyor..."
-    kubectl -n vault rollout restart statefulset/vault
-  fi
-
-  local pod
+  # DÜZELTME (Faz 12l, code review #1 — KRİTİK, Helm render'ıyla kanıtlandı):
+  # bu chart'ın `server.updateStrategyType` VARSAYILANI "OnDelete"dir
+  # (`helm template` ile DOĞRULANDI: StatefulSet'in `spec.updateStrategy.
+  # type: OnDelete`). OnDelete altında, `helm upgrade` StatefulSet'in
+  # `spec.template`'ini GÜNCELLESE BİLE — ve `kubectl rollout restart`
+  # (önceki hâlin kullandığı) bir restart ANOTASYONU EKLESE BİLE —
+  # Kubernetes controller'ı VAR OLAN pod'ları KENDİLİĞİNDEN DEĞİŞTİRMEZ;
+  # yalnızca bir pod MANUEL SİLİNDİĞİNDE yeni şablonla YENİDEN OLUŞTURULUR.
+  # Yani ÖNCEKİ kod (`kubectl rollout restart`) HEM ilk etkinleştirmede HEM
+  # yenilemede TAMAMEN NO-OP'tu — pod'lar SESSİZCE eski (plaintext veya
+  # eski sertifikalı) konfigürasyonda KALMAYA devam ederdi, script ise
+  # "başarılı" raporlardı (yalnızca "Running" fazını bekliyordu, GERÇEKTEN
+  # HANGİ config'in çalıştığını hiç DOĞRULAMIYORDU).
+  #
+  # ÇÖZÜM: HashiCorp'un KENDİ önerdiği sıra (standby'lar ÖNCE, active
+  # EN SON — bkz. https://developer.hashicorp.com/vault/docs/deploy/
+  # kubernetes/helm/run) ile HER pod'u AÇIKÇA SİLİYORUZ, yeniden
+  # oluşmasını, unsealed olmasını VE mounted sertifikanın GERÇEKTEN YENİ
+  # olduğunu (yerel dosyanın SHA-256'sıyla KARŞILAŞTIRARAK) doğruluyoruz.
+  # ÖNEMLİ: bu noktada pod'lar HENÜZ silinmedi — OnDelete altında `helm
+  # upgrade` VAR OLAN pod'ları DOKUNULMAMIŞ bırakır, yani hâlâ ÖNCEKİ
+  # (`_tls_was_live=false` ise PLAINTEXT) protokolle yanıt veriyorlar. HA
+  # Mode probu bunu YANSITMALI — aksi halde ilk etkinleştirmede (henüz
+  # HTTPS YOKKEN) bu sorgu bağlantı hatasıyla BAŞARISIZ olurdu.
+  local _probe_addr="http://127.0.0.1:8200"
+  [[ "${_tls_was_live}" == "true" ]] && _probe_addr="https://127.0.0.1:8200"
+  local pod mode active_pod="" standby_pods=()
   for pod in vault-0 vault-1 vault-2; do
-    wait_for "${pod} pod Running (TLS restart sonrası)" 300 10 \
-      bash -c "kubectl -n vault get pod ${pod} -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running"
+    mode="$(kubectl -n vault exec "${pod}" -- sh -c "VAULT_ADDR=${_probe_addr} VAULT_SKIP_VERIFY=true vault status" 2>/dev/null \
+      | awk '/^HA Mode/ {print $NF}')"
+    if [[ "${mode}" == "active" ]]; then
+      active_pod="${pod}"
+    else
+      standby_pods+=("${pod}")
+    fi
   done
+  [[ -n "${active_pod}" ]] || die "Hiçbir vault pod'u 'active' HA Mode raporlamadı — 'vault status' çıktısını kontrol edin."
+  ok "  Yeniden başlatma sırası: standby'lar önce (${standby_pods[*]}), active en son (${active_pod})"
+
+  local new_cert_sha; new_cert_sha="$(sha256sum "${work}/tls.crt" | awk '{print $1}')"
+
+  _restart_vault_pod() {
+    local p="$1"
+    kubectl -n vault delete pod "${p}" --wait=true --timeout=120s
+    wait_for "${p} yeniden oluşturuldu (Running)" 180 5 \
+      bash -c "kubectl -n vault get pod ${p} -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running"
+    wait_for "${p} unsealed (HTTPS, auto-unseal)" 180 10 \
+      bash -c "kubectl -n vault exec ${p} -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status -format=json' 2>/dev/null | jq -e '.sealed == false' >/dev/null"
+    # Mounted sertifikanın GERÇEKTEN yeni sertifika olduğunu doğrula —
+    # yalnızca pod'un "Running" olması, HANGİ sertifikayı sunduğunu
+    # KANITLAMAZ (ör. eski bir crash-loop pod'u yeniden başlamış olabilir).
+    local served_sha
+    served_sha="$(kubectl -n vault exec "${p}" -- cat /vault/userconfig/vault-server-tls/tls.crt 2>/dev/null | sha256sum | awk '{print $1}')"
+    [[ "${served_sha}" == "${new_cert_sha}" ]] \
+      || die "${p}: mounted sertifika YENİ sertifikayla EŞLEŞMİYOR (beklenen ${new_cert_sha}, bulunan ${served_sha:-boş}) — pod restart'ı sertifikayı GÜNCELLEMEMİŞ olabilir."
+    ok "  ${p}: yeniden oluşturuldu, unsealed, YENİ sertifikayı sunuyor (sha256 doğrulandı)"
+  }
+
+  local sp
+  for sp in "${standby_pods[@]}"; do
+    _restart_vault_pod "${sp}"
+  done
+  _restart_vault_pod "${active_pod}"
 
   VAULT_TLS_ENABLED="true"
   verify_vault_tls
@@ -903,6 +959,8 @@ enable_vault_tls() {
       crl_distribution_points="https://vault-active.vault.svc.cluster.local:8200/v1/${mount}/crl"
   done
   ok "  PKI config/urls → https (pki-root + pki-int-{dev,staging,prod})"
+
+  rm -rf "${work}"
 }
 
 # Her pod restart sonrası (transit auto-unseal, Faz 12e) OTOMATİK unseal

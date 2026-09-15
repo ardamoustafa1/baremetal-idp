@@ -158,6 +158,16 @@ spec:
                 # BİRLİKTE güncellenmelidir.
                 - cnpg-system
                 - velero
+                # DÜZELTME (Faz 12l, code review #4): offsite-sync (Faz 12k'de
+                # eklendi, `06-velero.sh:setup_postgres_offsite_sync()`'in
+                # CronJob'ları) BU LİSTEDE HİÇ YOKTU — `amazon/aws-cli`
+                # imajı Harbor'dan gelmediği için YENİ pod'lar Kyverno
+                # tarafından REDDEDİLİYORDU (yerel `kyverno apply` ile
+                # CANLI kanıtlandı: `fail: 1 — deny-non-harbor-images`).
+                # CronJob "oluşturulmuş" GÖRÜNÜYORDU ama HİÇBİR pod'u
+                # ÇALIŞTIRAMIYORDU — sync'in KENDİSİ SESSİZCE hiç
+                # gerçekleşmiyordu.
+                - offsite-sync
       validate:
         message: >-
           Bu Pod, Harbor registry'si (harbor.apps.example.internal) DIŞINDA bir imaj
