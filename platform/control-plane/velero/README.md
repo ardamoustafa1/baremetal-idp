@@ -13,6 +13,19 @@ AYNI gerekçe: S3 sırrı Git'e yazılamaz).
 | PostgreSQL veritabanı içeriği (PV) | ❌ Velero İLE DEĞİL | CNPG'nin KENDİ Barman/WAL-archiving PITR mekanizması (`compositions/postgresql/function.k` §1/§3, ZATEN Ceph RGW'ye yazıyor) |
 | Diğer PV'lerin (Loki/Tempo/Harbor) içeriği | ❌ Hayır | CSI volume snapshot entegrasyonu bilinçli olarak KAPSAM DIŞI — bkz. aşağıdaki not |
 
+**DÜZELTME (Faz 12j, code review #9):** yukarıdaki tablo "PostgreSQL verisi
+Velero'nun kapsamı DIŞINDA, ama CNPG kendi mekanizmasıyla ZATEN Ceph RGW'ye
+yazıyor" diyordu — bu DOĞRU ama EKSİKTİ: hem Postgres'in Barman verisi HEM
+DE Velero'nun K8s obje yedeği AYNI Ceph RGW'ye yazıldığı için, `VELERO_
+OFFSITE_ENABLED=true` yalnızca K8s objelerini küme-dışına taşıyordu —
+Postgres'in GERÇEK veritabanı içeriğinin BAĞIMSIZ bir kopyası YOKTU. Artık
+`06-velero.sh`'in `setup_postgres_offsite_sync()` adımı, HER tenant Postgres
+instance'ının backup bucket'ını (`<tenantRef>-<name>-backup`) GÜNLÜK olarak
+(04:00 UTC, Velero'nun K8s obje senkronundan 1 saat sonra) offsite hedefe
+senkronize eden AYRI bir CronJob kurar — yalnızca `VELERO_OFFSITE_ENABLED=
+true` iken. Diğer PV'ler (Loki/Tempo/Harbor) hâlâ KAPSAM DIŞI (CSI snapshot
+gerektirir, aşağıdaki not).
+
 **CSI volume snapshot NEDEN kapsam dışı:** `docs/runbooks/disaster-recovery.md`
 §3.1/§8a'daki GERÇEK bir DR tatbikatında (kind + Velero + MinIO), Velero'nun
 K8s obje restore'u BAŞARILI oldu ama CNPG Postgres'in PV içeriği (CSI volume
@@ -27,8 +40,9 @@ kurulu değildi).
 | Veri sınıfı | Mekanizma | RPO (kabul edilen veri kaybı) | RTO ölçümü |
 |---|---|---|---|
 | K8s objeleri (namespace, RBAC, Secret, CRD, ...) | Velero, günlük 03:00 UTC | **≤ 24 saat** (bir sonraki 03:00'a kadar yapılan HERHANGİ bir değişiklik, bir önceki backup'tan SONRAYSA kaybedilebilir) | K8s obje restore'u: **saniyeler-dakikalar** (GERÇEK ölçüm, bkz. disaster-recovery.md §8a: "Completed, saniyeler içinde" — kind+MinIO'da) |
-| PostgreSQL verisi (WAL/PITR) | CNPG Barman, sürekli WAL archiving | **Dakikalar** (CNPG'nin `archive_timeout` varsayılanına bağlı — WAL segmentleri sürekli Ceph RGW'ye akar, günlük bir backup'ı BEKLEMEZ) | ÖLÇÜLMEDİ — gerçek bir CNPG PITR restore tatbikatı bu görevde YAPILMADI (bkz. aşağıdaki "Açık iş") |
-| Ceph'in TAMAMEN kaybı (donanım felaketi) | Yalnızca `VELERO_OFFSITE_ENABLED=true` ile küme-dışı ikincil hedef | Offsite AÇIKSA: birincil ile AYNI (≤24s, 20dk kaydırmalı ikinci Schedule); KAPALIYSA: **TÜM yedekler kaybedilir** (bkz. "KRİTİK MİMARİ RİSK") | ÖLÇÜLMEDİ — gerçek donanım/Ceph yeniden kurulumu bu ortamda test EDİLEMEDİ (fiziksel disk yok) |
+| PostgreSQL verisi (WAL/PITR), BİRİNCİL Ceph RGW'de | CNPG Barman, sürekli WAL archiving | **Dakikalar** (CNPG'nin `archive_timeout` varsayılanına bağlı — WAL segmentleri sürekli Ceph RGW'ye akar, günlük bir backup'ı BEKLEMEZ) | ÖLÇÜLMEDİ — gerçek bir CNPG PITR restore tatbikatı bu görevde YAPILMADI (bkz. aşağıdaki "Açık iş") |
+| PostgreSQL verisinin offsite KOPYASI | `setup_postgres_offsite_sync()`, günlük 04:00 UTC | **≤ 24 saat** (yalnızca `VELERO_OFFSITE_ENABLED=true` iken var — KAPALIYSA offsite kopya YOK) | ÖLÇÜLMEDİ — bu senkron mekanizması bu görevde GERÇEK bir Ceph RGW/offsite S3'e karşı ÇALIŞTIRILMADI (statik olarak tasarlandı, bkz. aşağıdaki "Açık iş") |
+| Ceph'in TAMAMEN kaybı (donanım felaketi) | Yalnızca `VELERO_OFFSITE_ENABLED=true` ile küme-dışı ikincil hedef (HEM K8s objeleri HEM Postgres verisi) | Offsite AÇIKSA: birincil ile AYNI (≤24s); KAPALIYSA: **TÜM yedekler (K8s objeleri VE Postgres verisi) kaybedilir** (bkz. "KRİTİK MİMARİ RİSK") | ÖLÇÜLMEDİ — gerçek donanım/Ceph yeniden kurulumu bu ortamda test EDİLEMEDİ (fiziksel disk yok) |
 
 **Dürüstlük notu:** yukarıdaki RTO satırlarının ikisi "ÖLÇÜLMEDİ" diyor —
 bunu "çalışıyor" diye iddia etmek yanlış olurdu. Yapılan TEK gerçek, uçtan
@@ -57,3 +71,18 @@ uç nokta yazmamak içindir, "gerekli değil" anlamına GELMEZ.
   bkz. `compositions/postgresql/README.md` "Restore" bölümü (varsa) /
   CNPG'nin resmi `bootstrap.recovery` dokümantasyonu.
 - Gerçek bir donanım/Ceph-kaybı DR tatbikatı (bu ortamda fiziksel disk yok).
+- `setup_postgres_offsite_sync()`'in GERÇEK bir Ceph RGW + offsite S3'e
+  karşı UÇTAN UCA çalıştırılması (statik olarak tasarlandı, `amazon/aws-cli`
+  imajının syntax'ı ve `aws s3 sync` komutunun doğruluğu incelendi ama
+  canlı doğrulanmadı).
+- Kaynak Ceph kullanılamazken (yalnızca offsite hedeften) bir Postgres
+  restore denemesi — `compositions/postgresql/README.md`'nin "Restore"
+  bölümündeki `externalClusters.barmanObjectStore` bloğu, `endpointURL`'i
+  offsite S3'e çevirerek TEORİK OLARAK bu senaryoda da çalışmalıdır (aynı
+  Barman format'ı, farklı bir S3 uç noktası) ama bu HİÇ denenmedi.
+- **Bilinçli sınır:** `setup_postgres_offsite_sync()` yalnızca ÇALIŞTIĞI
+  ANDA var olan postgres backup bucket'larını keşfeder — SONRADAN
+  oluşturulan tenant'lar için bu adımın (`06-velero.sh --only
+  postgres-offsite-sync`) tekrar çalıştırılması gerekir (Vault TLS
+  yenilemesiyle AYNI "periyodik operatör eylemi" deseni). Otomatik,
+  sürekli bir reconciliation İCAT EDİLMEDİ — bilinçli bir kapsam sınırı.

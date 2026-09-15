@@ -84,6 +84,18 @@ spec:
                     highAvailability=true iken size=small kullanılamaz
                     (small tier 1 replika üretir, HA minimum 2 replika ister).
                     size=medium veya size=large seçin.
+                # DÜZELTME (Faz 12j, code review #10): `tenantRef` ÖNCEDEN
+                # değiştirilebilirdi — composition BU ALANI KULLANARAK
+                # (bkz. `compositions/postgresql/function.k`) CNPG Cluster'ı,
+                # Certificate'ı, NetworkPolicy'yi vb. ÜRETİR; `tenantRef`'i
+                # DEĞİŞTİRMEK, Crossplane'in TÜM bu kaynakları ESKİ namespace'te
+                # SİLİP YENİ namespace'te YENİDEN OLUŞTURMASINA yol açar —
+                # `10-protect-prod-tenant-deletion.yaml`'ın kapsamadığı
+                # (yalnızca Tenant claim DELETE'ini kapsar, PostgreSQLInstance
+                # UPDATE'ini DEĞİL) sessiz bir veri kaybı yoludur. `oldSelf`
+                # karşılaştırması yalnızca UPDATE'te değerlendirilir.
+                - rule: "self.tenantRef == oldSelf.tenantRef"
+                  message: "tenantRef değiştirilemez (immutable) — bu alan Postgres kaynaklarının ÜRETİLDİĞİ namespace'i belirler, değişikliği eski kaynakların silinip yenilerinin üretilmesine yol açar (sessiz veri kaybı). Yeni bir PostgreSQLInstance claim'i açın."
             status:
               type: object
               properties:

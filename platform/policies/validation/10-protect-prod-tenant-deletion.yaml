@@ -28,19 +28,32 @@
 #   platform.internal/deletion-approved-reason: "<gerekçe>"
 # Bu, `require-pss-restricted-clusterwide.yaml`'daki PolicyException
 # gerekçe/onay deseniyle AYNIDIR (Faz 10) — yeni bir desen İCAT EDİLMEDİ.
+#
+# DÜZELTME (Faz 12j, code review #10): bu politika ÖNCEDEN YALNIZCA Tenant
+# claim DELETE'ini kapsıyordu — ama bir prod tenant'ın PostgreSQLInstance
+# claim'i (KENDİ Cluster/PVC/backup bucket'ıyla) Tenant claim'ine
+# DOKUNULMADAN TEK BAŞINA silinebiliyordu (`06-tenant-requests-appset.
+# yaml.tpl`, `postgresql/*.yaml` dosyalarını da AYNI prune:true ile izler)
+# — bu da AYNI sınıf, onaysız veri kaybı yoluydu. PostgreSQLInstance'ın
+# KENDİ `spec.environment` alanı YOK — prod'luğu `spec.tenantRef`'in
+# (`tenant-<takım>-<ortam>`, bkz. compositions/tenant/function.k'nin
+# `nsName` türetimi) `-prod` ile bitip bitmediğine bakılarak belirlenir.
+# `tenantRef` artık immutable (bkz. postgresql/xrd.yaml) — bu kontrolü
+# BYPASS etmenin ikinci yolu (tenantRef'i dev'e çevirip silmek) KAPALI.
 # =============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
 metadata:
   name: protect-prod-tenant-deletion
   annotations:
-    policies.kyverno.io/title: Protect prod Tenant claims from unapproved deletion
+    policies.kyverno.io/title: Protect prod Tenant/PostgreSQLInstance claims from unapproved deletion
     policies.kyverno.io/category: Multi-Tenancy / Data Protection
     policies.kyverno.io/severity: critical
-    policies.kyverno.io/subject: Tenant
+    policies.kyverno.io/subject: Tenant, PostgreSQLInstance
     policies.kyverno.io/description: >-
-      spec.environment=prod olan bir Tenant claim'i, gerekçeli/onaylı
-      annotation'lar olmadan silinemez — ArgoCD'nin otomatik prune'u DAHİL.
+      Prod ortamındaki bir Tenant VEYA PostgreSQLInstance claim'i,
+      gerekçeli/onaylı annotation'lar olmadan silinemez — ArgoCD'nin
+      otomatik prune'u DAHİL.
 spec:
   validationFailureAction: Enforce
   background: false
@@ -101,6 +114,62 @@ spec:
               - key: "{{ request.oldObject.spec.environment || '' }}"
                 operator: Equals
                 value: "prod"
+              - key: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
+                operator: Equals
+                value: ""
+
+    - name: require-deletion-approved-by-for-prod-postgres
+      match:
+        any:
+          - resources:
+              kinds:
+                - PostgreSQLInstance
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: DELETE
+      validate:
+        message: >-
+          Bu, prod ortamındaki bir tenant'a ait PostgreSQLInstance claim'i
+          (tenantRef "-prod" ile bitiyor) — silinmeden ÖNCE claim'e
+          "platform.internal/deletion-approved-by" annotation'ı AYRI bir
+          PR/adımla eklenmelidir. Bkz. docs/runbooks/disaster-recovery.md
+          "Prod tenant silme onay süreci".
+        deny:
+          conditions:
+            all:
+              - key: "{{ ends_with(request.oldObject.spec.tenantRef || '', '-prod') }}"
+                operator: Equals
+                value: true
+              - key: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-by\" || '' }}"
+                operator: Equals
+                value: ""
+
+    - name: require-deletion-approved-reason-for-prod-postgres
+      match:
+        any:
+          - resources:
+              kinds:
+                - PostgreSQLInstance
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: DELETE
+      validate:
+        message: >-
+          Bu, prod ortamındaki bir tenant'a ait PostgreSQLInstance claim'i
+          (tenantRef "-prod" ile bitiyor) — silinmeden ÖNCE claim'e
+          "platform.internal/deletion-approved-reason" annotation'ı AYRI
+          bir PR/adımla eklenmelidir. Bkz. docs/runbooks/disaster-recovery.md
+          "Prod tenant silme onay süreci".
+        deny:
+          conditions:
+            all:
+              - key: "{{ ends_with(request.oldObject.spec.tenantRef || '', '-prod') }}"
+                operator: Equals
+                value: true
               - key: "{{ request.oldObject.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
                 operator: Equals
                 value: ""

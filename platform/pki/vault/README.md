@@ -85,6 +85,33 @@ artık HEPSİ `https://vault-active.vault.svc.cluster.local:8200` kullanıyor
 kullanılan ikincil, küçük Vault örneği) bu kapsamda DEĞİL — yalnızca ana
 Vault'a bağlanan bileşenler kapsandı.
 
+### Sertifika yenileme (Faz 12j, code review #7'nin çözümü)
+
+`vault-server-tls` sertifikası 90 gün (`ttl=2160h`) geçerlidir ve HERHANGİ
+bir otomatik yenileme mekanizmasına (cert-manager Certificate/Job/CronJob)
+BAĞLI DEĞİLDİR — bu, Vault'un kendi listener sertifikasının Vault'un
+KENDİ PKI'sinden geldiği self-referential yapı gereği bilinçli bir tasarım
+(cert-manager'ın Vault Issuer'ları ZATEN Vault'un kendisine bağımlı, Vault'un
+KENDİ sertifikasını cert-manager'a yaptırmak dairesel bir bağımlılık
+olurdu). Yenileme YERİNE `enable_vault_tls()` **idempotent ve tekrar
+çalıştırılabilir** hâle getirildi: her çalıştırmada sertifika YENİDEN
+ÜRETİLİR ve pod'lar sırayla yeniden başlatılır (transit auto-unseal
+sayesinde insan müdahalesi gerekmez). Operatör süresi dolmadan (**90
+günden ÖNCE, ör. her 60 günde bir**) şunu çalıştırmalıdır:
+
+```bash
+export VAULT_TOKEN="<root veya yeterli yetkili bir token>"
+./platform/bootstrap/03-pki.sh --only vault-tls
+```
+
+**Alarm/uyarı KURULMADI** (bu görevde yapılmadı) — üretimde bu 90 günlük
+pencereyi izleyen bir Prometheus alert'i (sertifikanın `notAfter`
+tarihine göre) EKLENMELİDİR; `cert-manager` zaten kendi imzaladığı
+sertifikalar için böyle bir alert'e sahip (bkz. `control-plane/
+observability/resources/certmanager-expiry-rules.yaml`) — bu, Vault'un
+KENDİ sertifikası için AYNI desenin BENZERİ, ayrı bir iş olarak kalır
+(Vault'un sertifikası cert-manager'ın İZLEMEDİĞİ bir yoldan geliyor).
+
 ---
 
 ## Doğrulama

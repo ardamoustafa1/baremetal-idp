@@ -81,6 +81,23 @@ spec:
                 # ZORUNLU: prod ortamında small tier yasak (conventions §4.2)
                 - rule: "!(self.environment == 'prod' && self.quotaTier == 'small')"
                   message: "prod ortamında quotaTier=small kullanılamaz (conventions.md §4.2)."
+                # DÜZELTME (Faz 12j, code review #10): `teamName`/`environment`
+                # (nsName = "tenant-${teamName}-${environment}" — kaynakların
+                # ÜRETİLDİĞİ namespace'in KENDİSİ) ÖNCEDEN değiştirilebilirdi.
+                # `10-protect-prod-tenant-deletion.yaml` yalnızca Tenant
+                # DELETE'ini kapsıyor — bir tenant claim'inin `environment`'ını
+                # "prod"dan "dev"e (veya tersi) GÜNCELLEMEK, aynı Kyverno
+                # politikasına HİÇ TAKILMADAN, Crossplane'in eski namespace'i
+                # SİLİP yeni bir tane ÜRETMESİNE yol açabilirdi (composition,
+                # nsName'i spec'ten TÜRETİR — bkz. compositions/tenant/
+                # function.k) — DELETE korumasını TAMAMEN BY-PASS eden bir
+                # veri kaybı yolu. `oldSelf` karşılaştırması yalnızca UPDATE'te
+                # değerlendirilir (CREATE'te `oldSelf` yoktur, kural
+                # ATLANIR) — bu, standart Kubernetes CEL semantiğidir.
+                - rule: "self.teamName == oldSelf.teamName"
+                  message: "teamName değiştirilemez (immutable) — bu alan tenant'ın namespace adının PARÇASIDIR, değişikliği eski namespace'in silinip yenisinin üretilmesine yol açar. Yeni bir Tenant claim'i açın."
+                - rule: "self.environment == oldSelf.environment"
+                  message: "environment değiştirilemez (immutable) — AYNI gerekçe: namespace adının PARÇASIDIR, ayrıca prod-tenant-deletion korumasını BY-PASS edebilir. Yeni bir Tenant claim'i açın."
             status:
               type: object
               properties:

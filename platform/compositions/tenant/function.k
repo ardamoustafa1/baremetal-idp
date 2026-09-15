@@ -498,6 +498,31 @@ vault write pki-int-${environment}/roles/tenant-${nsName} \\
   ttl=2160h \\
   key_type=rsa \\
   key_bits=2048
+
+# DÜZELTME (Faz 12j, code review #8 — güvenlik sınırı): ÖNCEDEN tenant'ın
+# cert-manager Issuer'ı (aşağıda), TÜM tenant'ların PAYLAŞTIĞI tek bir
+# Vault auth role'ünü ("cert-manager", bkz. 03-pki.sh) kullanıyordu — o
+# role'ün policy'si `pki-int-${environment}/sign/tenant-*` GLOB'una sahipti,
+# yani bu PAYLAŞILAN role üzerinden alınan HERHANGİ bir token, Vault API'sine
+# DOĞRUDAN çağrı yapılarak BAŞKA bir tenant'ın PKI rolünü imzalayabilirdi
+# (cert-manager'ın Issuer/Certificate CRD akışı bunu ENGELLEMEZ — bu akışın
+# DIŞINDA, ham bir Vault API isteğidir). Şimdi HER tenant kendi dar kapsamlı
+# policy'sini VE auth role'ünü alıyor — yalnızca KENDİ `tenant-${nsName}`
+# PKI rolünü imzalayabilir, başka HİÇBİR tenant'ınkini DEĞİL.
+vault policy write cert-manager-tenant-${nsName} - <<'EOT'
+path "pki-int-${environment}/sign/tenant-${nsName}" {
+  capabilities = ["create", "update"]
+}
+path "pki-int-${environment}/issue/tenant-${nsName}" {
+  capabilities = ["create", "update"]
+}
+EOT
+
+vault write auth/kubernetes/role/cert-manager-tenant-${nsName} \\
+  bound_service_account_names=cert-manager \\
+  bound_service_account_namespaces=${nsName} \\
+  token_policies=cert-manager-tenant-${nsName} \\
+  token_ttl=3600
 """
 
 vaultBootstrapJob = {
@@ -703,7 +728,14 @@ issuer = {
         # başarısız olur.
         path = "pki-int-${environment}/sign/tenant-${nsName}"
         auth.kubernetes = {
-            role = "cert-manager"
+            # DÜZELTME (Faz 12j, code review #8 — güvenlik sınırı): ÖNCEDEN
+            # `role = "cert-manager"` — TÜM tenant'ların PAYLAŞTIĞI, geniş
+            # kapsamlı (`tenant-*` glob'lu) bir role. Artık HER tenant'ın
+            # `_vaultBootstrapScript`'in ürettiği KENDİ dar kapsamlı
+            # `cert-manager-tenant-${nsName}` role'ünü kullanıyor — bu role
+            # YALNIZCA `pki-int-${environment}/sign/tenant-${nsName}`'ı
+            # imzalayabilir, başka HİÇBİR tenant'ınkini DEĞİL.
+            role = "cert-manager-tenant-${nsName}"
             mountPath = "/v1/auth/kubernetes"
             serviceAccountRef = {name = "cert-manager"}
         }

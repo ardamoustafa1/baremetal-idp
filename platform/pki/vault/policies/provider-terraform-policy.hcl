@@ -36,6 +36,19 @@ path "sys/policies/acl/eso-tenant-*" {
   capabilities = ["create", "read", "update", "delete"]
 }
 
+# DÜZELTME (Faz 12j, code review #8): tenant başına cert-manager Vault
+# auth role/policy'si (bkz. cert-manager-policy.hcl'deki DÜZELTME notu —
+# paylaşılan "cert-manager" role/policy'sinin `tenant-*` wildcard'ı
+# GÜVENLİK SINIRI ihlaliydi, her tenant artık KENDİ dar kapsamlı
+# role/policy'sini alıyor).
+path "auth/kubernetes/role/cert-manager-tenant-*" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+
+path "sys/policies/acl/cert-manager-tenant-*" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+
 path "pki-int-dev/roles/tenant-*" {
   capabilities = ["create", "read", "update", "delete"]
 }

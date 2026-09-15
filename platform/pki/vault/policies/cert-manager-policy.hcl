@@ -31,34 +31,20 @@ path "pki-int-prod/issue/platform-prod" {
   capabilities = ["create", "update"]
 }
 
-# --- Faz 6 eklentisi: tenant başına PKI rolleri --------------------------
-# XTenant composition'ı her tenant için pki-int-<env>/roles/tenant-<teamName>
-# rolünü (allowed_domains = tenant-<teamName>.svc.cluster.local, bkz.
-# compositions/tenant/function.k) provider-terraform ile üretiyor. Bu rolleri
-# imzalamak da yine cert-manager'ın (namespaced Issuer üzerinden) işi —
-# bu yüzden glob path'lerle GENİŞLETİLDİ. Glob (`*` sonek), yalnızca rol
-# ADINI genişletir; her rolün KENDİ allowed_domains'i (Vault PKI role
-# seviyesinde) hangi domain'in imzalanabileceğini zaten kısıtlar — bu path'ler
-# cert-manager'a "hangi ROL'leri çağırabilir" der, "hangi DOMAIN'i alabilir"
-# demez (o kısıtlama PKI role'ün kendisinde).
-path "pki-int-dev/sign/tenant-*" {
-  capabilities = ["create", "update"]
-}
-path "pki-int-dev/issue/tenant-*" {
-  capabilities = ["create", "update"]
-}
-path "pki-int-staging/sign/tenant-*" {
-  capabilities = ["create", "update"]
-}
-path "pki-int-staging/issue/tenant-*" {
-  capabilities = ["create", "update"]
-}
-path "pki-int-prod/sign/tenant-*" {
-  capabilities = ["create", "update"]
-}
-path "pki-int-prod/issue/tenant-*" {
-  capabilities = ["create", "update"]
-}
+# DÜZELTME (Faz 12j, code review #8 — güvenlik sınırı): bu policy ÖNCEDEN
+# (Faz 6 eklentisi) `pki-int-<env>/sign/tenant-*` GLOB'una sahipti — bu
+# policy'yi kullanan Vault auth role'ü (auth/kubernetes/role/cert-manager)
+# TÜM tenant namespace'lerine `bound_service_account_namespace_selector`
+# ile BAĞLIYDI, yani HERHANGİ bir tenant'ın cert-manager SA'sı bu policy
+# ÜZERİNDEN Vault API'sine DOĞRUDAN çağrı yapıp BAŞKA bir tenant'ın
+# `tenant-*` PKI rolünü imzalayabilirdi (cert-manager'ın normal Issuer/
+# Certificate CRD akışı bunu ENGELLEMEZ — bu, o akışın TAMAMEN DIŞINDA,
+# ham bir Vault API çağrısıdır). Glob KALDIRILDI — her tenant artık KENDİ
+# `cert-manager-tenant-<nsName>` policy'sini kullanır (yalnızca KENDİ
+# `tenant-<nsName>` rolünü imzalayabilir; bkz. compositions/tenant/
+# function.k'nin `_vaultBootstrapScript`'i, `tenant-<nsName>`/`eso-tenant-
+# <nsName>` İLE AYNI desende üretir). BU policy artık YALNIZCA platform-
+# genelinde ClusterIssuer'lar (platform-dev/staging/prod) İÇİN kullanılır.
 
 # CA zincirini okuyabilmeli (cert-manager istemcisi bazen bunu ister; ayrıca
 # 03-pki.sh'in doğrulama adımı da bu path'leri kullanır — cert-manager'ın

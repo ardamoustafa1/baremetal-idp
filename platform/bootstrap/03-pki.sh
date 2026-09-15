@@ -216,13 +216,29 @@ install_vault() {
     return 0
   fi
 
+  # DÜZELTME (Faz 12j, code review #6 — YÜKSEK): bu adım ÖNCEDEN HER ZAMAN
+  # yalnızca `values.yaml` (plaintext) ile helm upgrade yapıyordu — TLS
+  # ZATEN etkinleştirilmiş bir Vault'ta (`enable_vault_tls()` daha önce
+  # çalıştırılmış) bu script'i YENİDEN çalıştırmak (ör. `--only vault`,
+  # ya da `--only pki` tam koşusu), TLS overlay'ini (`values-tls.yaml`)
+  # helm upgrade'e VERMEDEN Vault'u plaintext listener'a GERİ ALIYORDU —
+  # `vault-server-tls` Secret'ı hâlâ VARDI ama artık HİÇBİR ŞEY onu
+  # KULLANMIYORDU. `vault-server-tls` Secret'ının varlığı, "TLS materyali
+  # daha önce üretildi ve BU helm upgrade'in de overlay'i KORUMASI
+  # GEREKİR" sinyali olarak kullanılıyor.
+  local -a _vault_value_files=(-f "${VAULT_DIR}/values.yaml")
+  if kubectl -n vault get secret vault-server-tls >/dev/null 2>&1; then
+    log "  Secret vault/vault-server-tls mevcut — TLS overlay (values-tls.yaml) KORUNUYOR."
+    _vault_value_files+=(-f "${VAULT_DIR}/values-tls.yaml")
+  fi
+
   # NOT: --wait KULLANILMIYOR. Chart'ın readinessProbe'u "sealed" durumda
   # BAŞARISIZ olur (bilinçli, values.yaml'da açıklandı) — --wait burada
   # sonsuza kadar bekler. Bunun yerine yalnızca pod'ların "Running" (Ready
   # değil) olmasını bekliyoruz.
   helm upgrade --install vault hashicorp/vault \
     --namespace vault --version "${VAULT_CHART_VERSION}" \
-    -f "${VAULT_DIR}/values.yaml" \
+    "${_vault_value_files[@]}" \
     --timeout 10m
 
   wait_for "vault-0 pod Running" 300 10 \
@@ -411,19 +427,35 @@ EOF
   # başarısız olurdu (Issuer.status Ready=True yalnızca bağlantıyı doğrular,
   # GERÇEK bir imzalama denemesi YAPMAZ — bu yüzden bug ÖNCEDEN fark
   # edilmedi; gerçek bir Certificate ile UÇTAN UCA test edilerek bulundu).
-  # `bound_service_account_namespace_selector` (Vault 1.16+) EKLENDİ —
-  # `platform.internal/managed-by=crossplane` etiketine sahip HER namespace
-  # (yalnızca tenant composition'ının ürettiği namespace'ler bu etikete
-  # sahip) bu role ile de auth olabilir. İki koşul OR'lanır (Vault'un kendi
-  # semantiği) — ClusterIssuer'lar (cert-manager'ın kendi SA'sı) VE
-  # tenant Issuer'ları (per-tenant SA) AYNI ANDA çalışır.
+  # DÜZELTME (Faz 12j, code review #8 — YÜKSEK, güvenlik sınırı):
+  # `bound_service_account_namespace_selector` (Vault 1.16+) ÖNCEDEN
+  # BURADAYDI — `platform.internal/managed-by=crossplane` etiketine sahip
+  # HER tenant namespace'i bu AYNI role/policy ÇİFTİYLE auth olabiliyordu,
+  # VE `cert-manager-policy.hcl` `pki-int-<env>/sign/tenant-*` GLOB'una
+  # sahipti (TÜM tenant'ların PKI rollerini kapsayan). Sonuç: herhangi bir
+  # tenant'ın (kendi namespace'indeki) cert-manager ServiceAccount'ı, bu
+  # PAYLAŞILAN role üzerinden GERÇEK bir Vault token'ı alıp Vault API'sine
+  # DOĞRUDAN (cert-manager Issuer/Certificate CRD akışını hiç KULLANMADAN)
+  # `pki-int-<env>/sign/tenant-<BAŞKA-tenant>` çağırabilir, BAŞKA bir
+  # tenant'ın domain'i için GEÇERLİ bir sertifika alabilirdi — Kubernetes
+  # RBAC/Kyverno bunu ENGELLEMEZ çünkü bu tamamen Vault API seviyesinde,
+  # normal Certificate/Issuer akışının DIŞINDA gerçekleşir.
+  #
+  # ÇÖZÜM: bu PAYLAŞILAN role artık YALNIZCA `cert-manager` namespace'indeki
+  # SA'yı (ClusterIssuer'lar — platform-dev/staging/prod, GERÇEKTEN
+  # platform-genelinde ve paylaşılması GEREKEN) kapsar. Her tenant artık
+  # KENDİ Vault auth role'ünü (`cert-manager-tenant-${nsName}`, YALNIZCA
+  # kendi `tenant-${nsName}` PKI rolünü imzalayabilen KENDİ policy'siyle)
+  # kullanır — `compositions/tenant/function.k`'nin `_vaultBootstrapScript`'i
+  # tarafından, `tenant-${nsName}`/`eso-tenant-${nsName}` İLE AYNI desende
+  # oluşturulur (bkz. o dosya). `cert-manager-policy.hcl`'deki `tenant-*`
+  # wildcard'ı KALDIRILDI.
   vexec write auth/kubernetes/role/cert-manager \
     bound_service_account_names=cert-manager \
     bound_service_account_namespaces=cert-manager \
-    bound_service_account_namespace_selector='{"matchLabels":{"platform.internal/managed-by":"crossplane"}}' \
     policies=cert-manager \
     ttl=1h
-  ok "  auth role 'cert-manager' → SA cert-manager/cert-manager VE her tenant namespace'indeki cert-manager SA'sı"
+  ok "  auth role 'cert-manager' → yalnızca SA cert-manager/cert-manager (ClusterIssuer'lar). Tenant Issuer'ları artık KENDİ per-tenant role'lerini kullanıyor."
 
   # --- crossplane rolü: SA adı rastgele (Faz 2), etiketle bul -------------
   # DÜZELTME (Faz 12b, GERÇEK kind cluster'ında keşfedildi): `pkg.crossplane.
@@ -695,11 +727,40 @@ enable_vault_tls() {
     return 0
   fi
 
-  if kubectl -n vault get secret vault-server-tls >/dev/null 2>&1; then
-    log "  Secret vault/vault-server-tls zaten var — TLS zaten etkin, adım ATLANIYOR (idempotent)."
-    VAULT_TLS_ENABLED="true"
-    verify_vault_tls
-    return 0
+  # DÜZELTME (Faz 12j, code review #6 — YÜKSEK, #7 — YÜKSEK): bu fonksiyon
+  # ÖNCEDEN "Secret zaten var → HER ŞEYİ ATLA" diyordu. İKİ AYRI gerçek
+  # sorun yaratıyordu: (1) `install_vault()` her koşuda yalnızca plaintext
+  # `values.yaml` ile helm upgrade yapıyordu (bkz. o fonksiyonun KENDİ
+  # düzeltmesi, hemen yukarıda) — yani TLS zaten etkinleştirilmiş bir
+  # Vault'ta script'i BAŞTAN çalıştırmak, Secret'ı SİLMEDEN ama listener'ı
+  # SESSİZCE plaintext'e GERİ ALIYORDU; bu fonksiyon Secret'ın VARLIĞINA
+  # bakıp "TLS etkin" sanıp hiçbir şey YAPMIYORDU — GERÇEK durumla (artık
+  # plaintext) TAMAMEN ÇELİŞEN bir "başarı" mesajı basıyordu. (2) 90 günlük
+  # sertifika için HİÇBİR yenileme mekanizması YOKTU — Secret varsa atlama
+  # davranışı, süre dolana kadar sertifikanın BİR DAHA HİÇ yenilenmeyeceği
+  # anlamına geliyordu.
+  #
+  # ÇÖZÜM: "Secret var mı" yerine Vault'un listener'ının GERÇEKTEN HTTPS
+  # üzerinden yanıt verip vermediği CANLI olarak PROBE edilir. Aşağıdaki
+  # adımların TAMAMI (rol, sertifika, Secret, ConfigMap, KV) HER ÇALIŞTIRMADA
+  # tekrar uygulanır (hepsi idempotent) — sertifika HER ÇALIŞTIRMADA
+  # YENİDEN ÜRETİLİR, bu da AYNI ZAMANDA #7'nin yenileme mekanizmasıdır
+  # (operatör bu adımı periyodik olarak, ör. `03-pki.sh --only vault-tls`
+  # ile 90 günlük TTL'nin süresi dolmadan — ör. 60 günde bir — tekrar
+  # çalıştırmalıdır). helm upgrade + rolling restart de HER ÇALIŞTIRMADA
+  # tekrar tetiklenir (`kubectl rollout restart` ile AÇIKÇA — StatefulSet
+  # spec'i DEĞİŞMEDİYSE helm upgrade KENDİLİĞİNDEN pod'ları YENİDEN
+  # BAŞLATMAZ, yani YENİ sertifika mounted volume'e yansısa bile Vault
+  # PROCESS'i onu bir restart OLMADAN OKUMAZ) — bu, HA/Raft'ın zaten
+  # tasarlandığı "tek seferde bir node" rolling restart modelidir, transit
+  # auto-unseal (Faz 12e) sayesinde insan müdahalesi GEREKMEZ.
+  local _tls_was_live="false"
+  if kubectl -n vault get secret vault-server-tls >/dev/null 2>&1 && \
+     kubectl -n vault exec vault-0 -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status' >/dev/null 2>&1; then
+    _tls_was_live="true"
+    log "  Vault listener'ı ŞU AN GERÇEKTEN HTTPS üzerinden yanıt veriyor — bu bir YENİLEME (renewal) geçişi: sertifika yeniden üretilip pod'lar sırayla yeniden başlatılacak."
+  else
+    log "  Vault listener'ı henüz HTTPS DEĞİL — bu bir İLK ETKİNLEŞTİRME geçişi."
   fi
 
   # --- 1) Vault'un KENDİ sunucu sertifikası için PKI rolü ---------------
@@ -741,7 +802,7 @@ enable_vault_tls() {
   kubectl -n vault create secret tls vault-server-tls \
     --cert="${work}/tls.crt" --key="${work}/tls.key" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  ok "  Secret vault/vault-server-tls oluşturuldu (ttl=2160h / 90 gün)"
+  ok "  Secret vault/vault-server-tls oluşturuldu/YENİLENDİ (ttl=2160h / 90 gün)"
 
   # --- 3) CA zincirini (intermediate + root) diğer bileşenlerin (cert-
   # manager Issuer'ları, ileride ESO/provider-terraform) GÜVENEBİLMESİ için
@@ -800,6 +861,22 @@ enable_vault_tls() {
     -f "${VAULT_DIR}/values.yaml" \
     -f "${VAULT_DIR}/values-tls.yaml" \
     --timeout 10m
+
+  # DÜZELTME (Faz 12j, code review #7): bu bir YENİLEME geçişiyse
+  # (`_tls_was_live=true`), StatefulSet spec'i (values.yaml/values-tls.yaml
+  # İÇERİĞİ) helm upgrade'den ÖNCEKİYLE AYNI olduğu için `helm upgrade`
+  # KENDİLİĞİNDEN bir rollout TETİKLEMEZ — Secret İÇERİĞİ değişse bile
+  # StatefulSet'in POD ŞABLONU değişmediğinden Kubernetes pod'ları YENİDEN
+  # OLUŞTURMAZ. Vault process'i ise TLS sertifikasını yalnızca BAŞLANGIÇTA
+  # okur (bir restart olmadan yeni Secret içeriğini FARK ETMEZ) — bu yüzden
+  # yenileme geçişinde rollout'u BURADA AÇIKÇA tetikliyoruz. İlk
+  # etkinleştirme geçişinde bu KOMUT GEREKSİZDİR (helm upgrade zaten YENİ
+  # bir StatefulSet spec'i uyguladığı için kendiliğinden rollout tetikler)
+  # ama tekrar çağırmak ZARARSIZDIR (idempotent, no-op).
+  if [[ "${_tls_was_live}" == "true" ]]; then
+    log "  Yenileme geçişi: yeni sertifikanın pod'lara ULAŞMASI için rollout AÇIKÇA tetikleniyor..."
+    kubectl -n vault rollout restart statefulset/vault
+  fi
 
   local pod
   for pod in vault-0 vault-1 vault-2; do

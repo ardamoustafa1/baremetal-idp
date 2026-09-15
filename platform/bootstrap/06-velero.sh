@@ -94,7 +94,7 @@ helm_repo() {
 # 0. Ön kontroller
 # =============================================================================
 preflight() {
-  step "0/4  Ön kontroller"
+  step "0/5  Ön kontroller"
   for bin in kubectl helm envsubst jq; do
     command -v "$bin" >/dev/null 2>&1 || die "'$bin' bulunamadı."
   done
@@ -128,7 +128,7 @@ preflight() {
 # 1. ObjectBucketClaim + S3 kimlik bilgisi Secret'ı
 # =============================================================================
 apply_obc_and_secret() {
-  step "1/4  ObjectBucketClaim + velero-credentials Secret'ı"
+  step "1/5  ObjectBucketClaim + velero-credentials Secret'ı"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log "[dry-run] ${VELERO_DIR}/resources/objectbucketclaim.yaml uygulanacaktı"
@@ -176,7 +176,7 @@ apply_obc_and_secret() {
 # 2. Velero (helm doğrudan — S3 sırrı Git'e YAZILMAZ)
 # =============================================================================
 install_velero() {
-  step "2/4  Velero ${VELERO_CHART_VERSION} (K8s obje/PV yedekleme)"
+  step "2/5  Velero ${VELERO_CHART_VERSION} (K8s obje/PV yedekleme)"
 
   helm_repo vmware-tanzu "${VELERO_HELM_REPO}"
   helm repo update vmware-tanzu >/dev/null
@@ -228,7 +228,7 @@ verify_velero() {
 #    nesnelerinin VAR OLMASI, backup'ın GERÇEKTEN alınabildiğini KANITLAMAZ).
 # =============================================================================
 run_backup_smoke_test() {
-  step "3/4  Uçtan uca test: on-demand backup"
+  step "3/5  Uçtan uca test: on-demand backup"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log "[dry-run] test backup'ı tetiklenip doğrulanacaktı"
@@ -256,6 +256,105 @@ EOF
   ok "On-demand backup GERÇEKTEN tamamlandı — Velero → Ceph RGW yolu çalışıyor"
 
   kubectl -n velero delete backup "${name}" --wait=false >/dev/null 2>&1 || true
+}
+
+# =============================================================================
+# 4. PostgreSQL Barman yedeklerinin (base backup + WAL) küme-dışına
+#    SENKRONİZASYONU — Faz 12j, code review #9'un çözümü.
+#
+# GERÇEK RİSK: Velero'nun offsite BackupStorageLocation'ı yalnızca K8s
+# OBJELERİNİ (values-offsite.yaml.tpl'de `deployNodeAgent: false` +
+# `volumeSnapshotLocation: []` — bkz. o dosyanın "CSI volume snapshot
+# entegrasyonu KAPSAM DIŞI" notu) kapsıyor. PostgreSQL'in GERÇEK verisi
+# (`compositions/postgresql/function.k`'nin `backup.barmanObjectStore`'u)
+# BİRİNCİL Ceph RGW'ye yazılıyor — offsite hedefte bu verinin BAĞIMSIZ bir
+# kopyası YOKTU. Ceph tamamen kaybedilirse, offsite'taki Kubernetes obje
+# manifestleriyle veritabanı İÇERİĞİ GERİ GETİRİLEMEZ.
+#
+# ÇÖZÜM: her tenant Postgres instance'ının backup bucket'ı (`<tenantRef>-
+# <name>-backup`, KENDİ namespace'inde bir OBC — rook-ceph'te DEĞİL,
+# Loki/Tempo/Velero'nun aksine) için AYRI, TEK-AMAÇLI bir CronJob kurulur.
+# Her CronJob YALNIZCA KENDİ bucket'ının ZATEN VAR OLAN, dar kapsamlı OBC
+# kimlik bilgilerini kullanır — YENİ bir Ceph RGW admin/cross-bucket
+# kimliği İCAT EDİLMEDİ (böyle bir şeyin doğru radosgw-admin semantiği bu
+# ortamda DOĞRULANAMAZDI; bunun yerine ZATEN kanıtlanmış, OBC-başına
+# izolasyon deseni yeniden kullanıldı). `amazon/aws-cli` imajı, iki S3
+# uç noktası arasında (Ceph RGW ↔ offsite) iki adımlı bir sync yapar
+# (indir → yükle — S3 API'si bucket'lar arası DOĞRUDAN kopyalamayı,
+# farklı sağlayıcılar arasında, desteklemez).
+#
+# BİLİNÇLİ SINIR: keşif bu script'in çalıştığı ANDA VAR OLAN bucket'ları
+# bulur — YENİ bir tenant Postgres instance'ı SONRADAN oluşturulursa, o
+# bucket'ın offsite sync CronJob'unu almak için bu adım (`--only
+# postgres-offsite-sync`) TEKRAR çalıştırılmalıdır (TLS yenilemesiyle AYNI
+# "operatör periyodik olarak tetikler" deseni — bkz. pki/vault/README.md
+# "Sertifika yenileme").
+# =============================================================================
+setup_postgres_offsite_sync() {
+  step "4/5  PostgreSQL Barman yedeklerinin küme-dışına senkronizasyonu"
+
+  if [[ "${VELERO_OFFSITE_ENABLED}" != "true" ]]; then
+    log "  VELERO_OFFSITE_ENABLED=false — bu adım atlanıyor (K8s objelerinin"
+    log "  offsite kopyası da yok; bkz. Özet'teki uyarı)."
+    return 0
+  fi
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log "[dry-run] postgres-*-backup OBC'leri keşfedilip offsite sync CronJob'ları render edilecekti"
+    return 0
+  fi
+
+  kubectl create namespace offsite-sync --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl label namespace offsite-sync platform.internal/layer=control-plane --overwrite >/dev/null
+
+  # DÜZELTME: Postgres backup OBC'leri `rook-ceph` namespace'inde DEĞİL —
+  # `compositions/postgresql/function.k`'nin `backupBucket`si KENDİ tenant
+  # namespace'inde yaşar (bkz. o dosyanın `metadata.namespace = tenantRef`).
+  # Tüm namespace'lerde `platform.internal/component=postgresql` etiketli
+  # OBC'ler aranır.
+  local obcs synced=0
+  obcs="$(kubectl get objectbucketclaim --all-namespaces \
+    -l platform.internal/component=postgresql \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{" "}{.spec.bucketName}{"\n"}{end}' 2>/dev/null || true)"
+
+  if [[ -z "${obcs}" ]]; then
+    warn "  Hiçbir postgres-*-backup OBC'si bulunamadı — henüz Postgres instance'ı yok olabilir. Bu adım daha sonra tekrar çalıştırılabilir."
+    return 0
+  fi
+
+  while IFS=' ' read -r ns obc_name bucket_name; do
+    [[ -z "${ns}" ]] && continue
+    local key secret
+    key="$(kubectl -n "${ns}" get secret "${obc_name}" -o jsonpath='{.data.AWS_ACCESS_KEY_ID}' 2>/dev/null | base64 -d || true)"
+    secret="$(kubectl -n "${ns}" get secret "${obc_name}" -o jsonpath='{.data.AWS_SECRET_ACCESS_KEY}' 2>/dev/null | base64 -d || true)"
+    if [[ -z "${key}" || -z "${secret}" ]]; then
+      warn "  ${ns}/${obc_name}: kimlik bilgisi okunamadı, atlanıyor"
+      continue
+    fi
+
+    local job_name="offsite-sync-${bucket_name}"
+    # DNS-1123 uyumu için normalize et (bucket adları zaten alt çizgi
+    # İÇERMEZ — tenant/postgres adlandırma kuralları bunu garanti eder —
+    # ama uzunluk sınırına karşı güvenlik payı bırakılır).
+    job_name="${job_name:0:52}"
+
+    kubectl -n offsite-sync create secret generic "${job_name}-creds" \
+      --from-literal="SRC_ACCESS_KEY=${key}" \
+      --from-literal="SRC_SECRET_KEY=${secret}" \
+      --from-literal="DST_ACCESS_KEY=${VELERO_OFFSITE_S3_ACCESS_KEY}" \
+      --from-literal="DST_SECRET_KEY=${VELERO_OFFSITE_S3_SECRET_KEY}" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+    JOB_NAME="${job_name}" BUCKET_NAME="${bucket_name}" \
+      envsubst '${JOB_NAME} ${BUCKET_NAME} ${CEPH_OBJECTSTORE_NAME} ${VELERO_OFFSITE_S3_URL} ${VELERO_OFFSITE_S3_REGION}' \
+      < "${VELERO_DIR}/templates/offsite-sync-cronjob.yaml.tpl" \
+      | kubectl apply -f -
+
+    ok "  offsite sync CronJob: ${job_name} (bucket: ${bucket_name}, kaynak ns: ${ns})"
+    synced=$(( synced + 1 ))
+  done <<< "${obcs}"
+
+  ok "PostgreSQL offsite sync: ${synced} bucket için CronJob kuruldu (günlük 04:00 UTC — Velero'nun K8s obje senkronundan 1 saat SONRA)"
 }
 
 # =============================================================================
@@ -294,7 +393,8 @@ main() {
 
   should_run obc            && apply_obc_and_secret
   should_run velero         && install_velero
-  should_run schedule-test  && run_backup_smoke_test
+  should_run schedule-test          && run_backup_smoke_test
+  should_run postgres-offsite-sync  && setup_postgres_offsite_sync
 
   summary
   ok "Velero kurulumu tamamlandı."

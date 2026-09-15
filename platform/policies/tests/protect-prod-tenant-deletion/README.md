@@ -59,10 +59,37 @@ kyverno apply platform/policies/validation/10-protect-prod-tenant-deletion.yaml 
 # → pass: 2, fail: 0 (politika yalnızca prod'u kapsar)
 ```
 
+## PostgreSQLInstance kapsamı (Faz 12j, code review #10'un eklentisi)
+
+Aynı politika artık `PostgreSQLInstance` claim DELETE'ini de kapsıyor —
+`tenantRef`'in (immutable, bkz. `postgresql/xrd.yaml`) `-prod` ile bitip
+bitmediğine göre. Aynı yöntemle doğrulandı:
+
+```bash
+cat > /tmp/pg-prod.yaml <<'EOF'
+apiVersion: platform.internal/v1alpha1
+kind: PostgreSQLInstance
+metadata:
+  name: acme-db
+  namespace: tenant-acme-prod
+spec:
+  tenantRef: tenant-acme-prod
+  size: small
+  version: "16"
+EOF
+
+kyverno apply platform/policies/validation/10-protect-prod-tenant-deletion.yaml \
+  -r /tmp/pg-prod.yaml --set request.operation=DELETE
+# → pass: 0, fail: 2 (onaysız — REDDEDİLDİ)
+
+# annotation'lar eklenince (aynı iki annotation) → pass: 2, fail: 0 (KABUL)
+# tenantRef "-dev" ile bitiyorsa (tenant-acme-dev) → pass: 2, fail: 0 (ETKİLENMEDİ)
+```
+
 ## Sonuç
 
-Üç senaryo da beklenen sonucu verdi — politika hem gerçekten reddediyor
-(onaysız prod) hem de gereksiz yere engellemiyor (dev, onaylı prod).
-İleride bu CLI sürümü `test` komutunun values şemasını
-güncellediğinde bu üç senaryo statik bir `kyverno-test.yaml` fixture'ına
-taşınabilir.
+Yedi senaryo da (Tenant: onaysız-prod/onaylı-prod/dev; PostgreSQLInstance:
+onaysız-prod/onaylı-prod/dev) beklenen sonucu verdi — politika hem
+gerçekten reddediyor hem de gereksiz yere engellemiyor. İleride bu CLI
+sürümü `test` komutunun values şemasını güncellediğinde bu senaryolar
+statik bir `kyverno-test.yaml` fixture'ına taşınabilir.

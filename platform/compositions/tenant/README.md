@@ -47,13 +47,51 @@ kaynaklardır (yine de üretiliyor ve test ediliyor).
 
 ## Vault izolasyonu — iki tenant birbirinin domain'ine ERİŞEMEZ
 
-Her tenant'ın **kendi** Vault PKI rolü vardır (`tenant-<teamName>`,
+Her tenant'ın **kendi** Vault PKI rolü vardır (`tenant-<nsName>`,
 `pki-int-<environment>` mount'unda), `allowed_domains =
-"tenant-<teamName>-<environment>.svc.cluster.local"` + `allow_subdomains =
-true` ile kısıtlı. `tenant-acme` rolüyle `*.tenant-globex-dev...` için
-sertifika istemek Vault'un KENDİSİ tarafından reddedilir — bu, cert-manager
-veya Kubernetes RBAC'a değil, **PKI motorunun kendi domain kısıtına**
-dayanan bir izolasyondur (bkz. `function.k` §6 ve `tests/e2e/`).
+"<nsName>.svc.cluster.local"` + `allow_subdomains = true` ile kısıtlı.
+`tenant-acme` rolüyle `*.tenant-globex-dev...` için sertifika istemek
+Vault'un KENDİSİ tarafından reddedilir — bu, **PKI motorunun kendi domain
+kısıtına** dayanan, bağımsız bir izolasyon katmanıdır.
+
+**AMA bu TEK BAŞINA yeterli DEĞİLDİR** (Faz 12j, code review #8'de bulunan
+gerçek boşluk): domain kısıtı yalnızca "hangi PKI ROLÜ hangi domain'i
+imzalayabilir" sorusunu cevaplar — "KİM o PKI rolünü ÇAĞIRABİLİR" sorusunu
+DEĞİL. ÖNCEDEN cert-manager Issuer'ı TÜM tenant'ların PAYLAŞTIĞI TEK bir
+Vault auth role'ü (`cert-manager`) kullanıyordu ve o role'ün policy'si
+`pki-int-<env>/sign/tenant-*` GLOB'una sahipti — yani BİR tenant'ın kimliği
+(kendi namespace'indeki `cert-manager` ServiceAccount'u), Vault API'sine
+DOĞRUDAN bir çağrı yaparak (cert-manager'ın normal Issuer/Certificate CRD
+akışının DIŞINDA) `pki-int-<env>/sign/tenant-globex-dev`'i çağırabilir ve
+GEÇERLİ bir `*.tenant-globex-dev.svc.cluster.local` sertifikası ALABİLİRDİ
+— globex'in KENDİ rolü globex'in KENDİ domain'i için sertifika üretmeye
+YETKİLİYDİ, sorun domain kısıtında değil, "kim bu rolü çağırabilir"
+kısıtındaydı.
+
+**ÇÖZÜM:** her tenant artık KENDİ Vault auth role'ünü
+(`cert-manager-tenant-<nsName>`) VE KENDİ policy'sini (`cert-manager-
+tenant-<nsName>`, YALNIZCA `pki-int-<env>/sign/tenant-<nsName>`'a erişimi
+olan) kullanıyor — `_vaultBootstrapScript` tarafından `tenant-<nsName>`/
+`eso-tenant-<nsName>` İLE AYNI desende üretilir. Paylaşılan `cert-manager`
+role'ü artık YALNIZCA `cert-manager` namespace'indeki (ClusterIssuer'lar
+için) SA'yı kapsar.
+
+**Negatif test (bu görevde canlı bir Vault olmadığı için ÇALIŞTIRILAMADI —
+gerçek bir cluster'da doğrulanmalı):**
+
+```bash
+# acme tenant'ının cert-manager SA'sıyla auth olup globex'in rolünü
+# imzalamaya ÇALIŞ — "permission denied" BEKLENİR:
+kubectl -n tenant-acme-dev exec deploy/some-debug-pod -- sh -c '
+  TOKEN=$(vault write -field=token auth/kubernetes/login \
+    role=cert-manager-tenant-tenant-acme-dev \
+    jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token)
+  VAULT_TOKEN=$TOKEN vault write pki-int-dev/sign/tenant-tenant-globex-dev \
+    common_name=evil.tenant-globex-dev.svc.cluster.local
+  # beklenen: "permission denied" (403) — acme'nin role'ü globex'in
+  # PKI yolunu HİÇ İÇERMEZ
+'
+```
 
 Bu rolleri provider-terraform (ADR-0001'in escape hatch'i) yönetir çünkü
 Crossplane'in bir "provider-vault"ı yok — `function.k`'deki
