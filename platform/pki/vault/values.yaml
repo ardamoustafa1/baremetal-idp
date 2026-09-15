@@ -3,13 +3,17 @@
 # ADR-0001 Karar 2.3. Rook-Ceph ceph-block üzerinde PV'ler (Faz 1'in
 # StorageClass'ı — teknik borç #1: gerçek ad `ceph-block`, `ceph-block-<tier>` değil).
 #
-# TLS NOTU (bilinçli, kabul edilen sınır — bkz. pki/vault/README.md
-# "Vault'un kendi TLS'i" bölümü): listener bu fazda tls_disable=1 ile
-# çalışıyor. Vault'un KENDİ sertifikasını KENDİ PKI'sinden imzalatması
-# (self-referential bootstrap) döngüsel bir problemdir; bunu şimdi kör
-# şekilde otomatikleştirmek Vault'un erişilemez hale gelmesi riskini taşır.
-# Trafik yalnızca küme-içi ve Cilium NetworkPolicy ile korunuyor (TLS ile
-# değil). Bu, PLATFORM_CONTEXT.md teknik borcuna eklendi.
+# TLS NOTU (DÜZELTİLDİ — Faz 12g, code review #8): bu dosya BİRİNCİ AŞAMAdır
+# — listener burada hâlâ tls_disable=1 ile tanımlı, çünkü Vault'un KENDİ
+# sertifikasını KENDİ PKI'sinden (pki-int-dev) imzalatabilmesi için önce
+# AYAKTA ve unsealed olması gerekir (self-referential bootstrap — döngüsel
+# bağımlılık). İKİNCİ AŞAMA — gerçek TLS'in AÇILDIĞI overlay — artık
+# `values-tls.yaml`'da: 03-pki.sh'in `enable_vault_tls()` adımı, pki-int-dev
+# hazır olduktan SONRA bu iki dosyayı `-f values.yaml -f values-tls.yaml`
+# ile BİRLİKTE uygulayarak listener'ı HTTPS'e geçirir (bkz. docs/runbooks/
+# vault-self-tls.md — bu overlay o runbook'un OTOMATİKLEŞTİRİLMİŞ hâlidir).
+# Trafik bu ikinci aşamaya kadar yalnızca küme-içi ve Cilium NetworkPolicy
+# ile korunur (TLS ile değil).
 #
 # BU DOSYADA STATİK KİMLİK BİLGİSİ YOK. Vault init/unseal çıktısı (root
 # token, unseal key'ler) hiçbir zaman bir values/manifest dosyasına yazılmaz.

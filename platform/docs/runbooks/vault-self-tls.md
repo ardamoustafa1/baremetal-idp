@@ -1,3 +1,15 @@
+> **GÜNCELLEME (Faz 12g, code review #8): bu prosedür artık OTOMATİK.**
+> `03-pki.sh`'in `enable_vault_tls()` adımı (§4/7), aşağıdaki adımların
+> TAMAMINI sıfırdan bir bootstrap sırasında kendisi çalıştırır — bkz.
+> `pki/vault/README.md`'nin "Vault'un kendi TLS'i — ÇÖZÜLDÜ" bölümü. Bu
+> runbook, artık YALNIZCA (a) prosedürü ANLAMAK isteyenler için kavramsal
+> bir referans, ve (b) TLS'i sonradan ELLE kapatıp AÇMAK (ör. sertifika
+> rotasyonunun script DIŞINDA acil elle yapılması gereken bir durumu) için
+> tutulur. Normal bootstrap akışında bu adımları ELLE ÇALIŞTIRMANIZ
+> GEREKMEZ.
+>
+> ---
+
 # Runbook: Vault'un Kendi Listener TLS'ini Açma (self-referential PKI)
 
 Açık karar #10 / teknik borç #13'ün ÇÖZÜMÜ. Vault şu an `tls_disable=1` ile

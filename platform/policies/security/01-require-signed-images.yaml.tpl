@@ -37,6 +37,14 @@ metadata:
       Harbor registry'sinden (${HARBOR_HOSTNAME}) çekilen hiçbir imaj,
       platformun Cosign anahtarıyla imzalanmamışsa Pod'a dönüştürülemez.
 spec:
+  # DÜZELTME (Faz 12g, code review #10): bu alan hiç YOKTU — Kyverno'nun
+  # varsayılanı "Audit"tir, yani policy yalnızca UYARI veriyordu, hiçbir
+  # imzasız Pod'u FİİLEN engellemiyordu. Yalnızca test fixture'ında
+  # (tests/require-signed-images/policy-test.yaml) "Enforce" vardı — gerçek
+  # şablona hiç yansıtılmamıştı (bkz. o dosyadaki "kural düzeyinde
+  # imageReferences" düzeltmesiyle AYNI sınıf hata: test doğru, gerçek
+  # şablon eksik).
+  validationFailureAction: Enforce
   webhookTimeoutSeconds: 30
   failurePolicy: Fail
   rules:
@@ -95,3 +103,65 @@ spec:
                       ignoreSCT: true
           mutateDigest: true
           required: true
+
+    # DÜZELTME (Faz 12g, code review #10): verifyImages yalnızca
+    # `imageReferences: ["${HARBOR_HOSTNAME}/*"]` ile EŞLEŞEN imajları
+    # doğrular — Kyverno'da bir Pod'un imajı HİÇBİR verifyImages
+    # imageReferences deseniyle eşleşmiyorsa, o kural o Pod için SESSİZCE
+    # ATLANIR (reddedilmez). Yani bir tenant `docker.io/...` veya başka
+    # herhangi bir dış registry'den imaj çekerek Cosign imza doğrulamasını
+    # TAMAMEN ATLAYABİLİYORDU — "yalnızca Harbor imzalı imajlar çalışır"
+    # garantisi aslında yalnızca "Harbor'dan çekersen imzalı olmak
+    # ZORUNDASIN, başka yerden çekersen HİÇBİR KONTROL YOK" anlamına
+    # geliyordu. Bu kural, namespace exclude listesi HARİÇ (require-pss-
+    # restricted-clusterwide.yaml'daki platform sistemi namespace'leriyle
+    # AYNI liste — Cilium/Rook/ArgoCD/vb. kendi upstream imajlarını Harbor
+    # DIŞINDAN çeker, bunlar bilinçli olarak kapsam dışı) her Pod'un TÜM
+    # container/initContainer imajlarının Harbor'dan geldiğini zorunlu kılar.
+    - name: deny-non-harbor-images
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-node-lease
+                - kube-public
+                - default
+                - cilium
+                - metallb-system
+                - rook-ceph
+                - argocd
+                - crossplane-system
+                - kyverno
+                - external-secrets
+                - vault
+                - vault-unseal
+                - cert-manager
+                - harbor
+                - keycloak
+                - observability
+                - opencost
+                - backstage
+                - pki-test
+                - observability-cert-alert-test
+      validate:
+        message: >-
+          Bu Pod, Harbor registry'si (${HARBOR_HOSTNAME}) DIŞINDA bir imaj
+          kullanıyor. Yalnızca Harbor'dan çekilen imajlar yukarıdaki
+          verify-harbor-image-signature kuralıyla Cosign imza doğrulamasından
+          geçer — başka bir registry'den imaj çekmek bu doğrulamayı TAMAMEN
+          ATLAR. Tüm imajlar önce Harbor'a push edilip oradan çekilmelidir.
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.containers[?!starts_with(image, '${HARBOR_HOSTNAME}/')] | length(@) }}"
+                operator: GreaterThan
+                value: 0
+              - key: "{{ (request.object.spec.initContainers || `[]`)[?!starts_with(image, '${HARBOR_HOSTNAME}/')] | length(@) }}"
+                operator: GreaterThan
+                value: 0

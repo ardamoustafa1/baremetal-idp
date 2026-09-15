@@ -47,22 +47,43 @@ mount'larını bilir.
 
 ---
 
-## Vault'un kendi TLS'i — bilinçli kabul edilen sınır
+## Vault'un kendi TLS'i — ÇÖZÜLDÜ (Faz 12g, code review #8)
 
-Vault'un dinleyicisi (`listener "tcp"`) bu fazda **`tls_disable = 1`**.
-Gerekçe: Vault'un kendi sunucu sertifikasını **kendi PKI'sinden**
-imzalatması (self-referential bootstrap) klasik bir tavuk-yumurta
-problemidir — Vault henüz PKI mount'una sahip değilken/unseal değilken
-bu sertifikayı nasıl üretecek? Bunu bu fazda kör bir otomasyonla çözmeye
-çalışmak, **Vault'un erişilemez hale gelmesi riski** taşır — bu, mevcut
-riski (küme-içi düz metin, Cilium NetworkPolicy ile korunuyor) kabul
-etmekten çok daha tehlikelidir.
+`values.yaml` (bu dosya) hâlâ **BİRİNCİ AŞAMA**'yı tanımlar —
+`global.tlsDisable: true`, listener `tls_disable = 1` — çünkü Vault'un
+kendi sunucu sertifikasını kendi PKI'sinden (`pki-int-dev`) imzalatabilmesi
+için önce AYAKTA ve unsealed olması gerekir (self-referential bootstrap,
+klasik tavuk-yumurta problemi). Bu artık kabul edilmiş bir SINIR değil,
+**İKİ AŞAMALI bir bootstrap sırasının BİRİNCİ adımı**:
 
-**Teknik borç olarak kaydedildi** (PLATFORM_CONTEXT.md). Gelecekteki
-kapatma yolu: Vault unsealed VE `pki-int-*` hazır olduktan SONRA, Vault'un
-kendi sertifikasını `pki-int-<env>` üzerinden imzalatıp listener config'ini
-`tls_disable = 0` + sertifika yoluna güncelleyip **kontrollü, tek node'da
-test edilerek** yeniden başlatmak. Bu ayrı bir runbook gerektirir.
+1. **Bu dosyayla** ilk `helm install` (plaintext, yalnızca küme-içi +
+   Cilium NetworkPolicy ile korunur).
+2. `03-pki.sh`'in `enable_vault_tls()` adımı — PKI hiyerarşisi kurulduktan
+   HEMEN sonra, cert-manager'dan ÖNCE — `pki-int-dev/roles/vault-server`
+   rolünü tanımlar, TEK bir sertifika (tüm `vault-0/1/2` + Service SAN'larını
+   kapsayan) imzalatır, `vault/vault-server-tls` Secret'ını oluşturur ve
+   `values.yaml` + **`values-tls.yaml`** (İKİNCİ AŞAMA overlay'i) ile
+   `helm upgrade` çalıştırarak listener'ı GERÇEKTEN HTTPS'e geçirir. Her
+   pod, restart sonrası transit auto-unseal (Faz 12e) ile OTOMATİK unseal
+   olur — script bunu doğrular.
+
+Bu prosedür, bu dizindeki eski `docs/runbooks/vault-self-tls.md`
+runbook'unun (elle, bakım penceresinde tetiklenen versiyon) OTOMATİKLEŞTİRİLMİŞ
+hâlidir — SIFIRDAN bir bootstrap'ın PARÇASI olarak (henüz hiçbir tenant
+verisi yokken) çalıştığı için, runbook'un "canlı bir cluster'ı riske atma"
+endişesi burada GEÇERLİ DEĞİL.
+
+Sonuç olarak cert-manager'ın `ClusterIssuer`/`Issuer` kaynakları, ESO'nun
+`SecretStore`'ları ve tenant bootstrap Job'unun kendi `vault` CLI çağrıları
+artık HEPSİ `https://vault-active.vault.svc.cluster.local:8200` kullanıyor
+— bkz. `pki/cert-manager/resources/clusterissuers.yaml.tpl` (`caBundle`),
+`compositions/postgresql/function.k` §7 ve `compositions/tenant/function.k`
+(`vaultCaSecretStore`/`vaultCaExternalSecret`, `caProvider`/
+`caBundleSecretRef`), `backstage/app/resources/secretstore-externalsecret.yaml`.
+
+**KAPSAM DIŞI (bilinçli):** `vault-unseal/` (Transit auto-unseal için
+kullanılan ikincil, küçük Vault örneği) bu kapsamda DEĞİL — yalnızca ana
+Vault'a bağlanan bileşenler kapsandı.
 
 ---
 

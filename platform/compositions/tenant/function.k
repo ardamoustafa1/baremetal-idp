@@ -119,11 +119,32 @@ role = {
         annotations = _resAnnoAlwaysReady("role")
         labels = labels
     }
+    # DÜZELTME (Faz 12g, code review #7): "networking.k8s.io" blanket wildcard
+    # ("*" resource, "*" verb) tenant'a KENDİ NetworkPolicy/CiliumNetworkPolicy
+    # kaynaklarını da create/update/delete YETKİSİ veriyordu. Kubernetes
+    # NetworkPolicy (ve Cilium'un CNP karşılığı) modeli SALT-EKLEMELİ'dir
+    # (allow-list) — tenant, defaultDenyPolicy/tierNetworkPolicy'nin ÜSTÜNE
+    # kendi serbest bırakan bir NetworkPolicy YAZARAK platformun zero-trust
+    # ağ izolasyonunu (örn. tüm namespace'lere/internete egress) BAŞKA BİR
+    # tenant'ın izni olmadan genişletebilirdi — bu bir yetki yükseltmesi.
+    # networking.k8s.io iki alt kümeye ayrıldı: Ingress (tenant'ın meşru
+    # self-service ihtiyacı — tam CRUD) ve NetworkPolicy (yalnızca salt-okunur
+    # görünürlük; create/update/delete/patch YOK).
     rules = [
         {
-            apiGroups = ["", "apps", "batch", "networking.k8s.io"]
+            apiGroups = ["", "apps", "batch"]
             resources = ["*"]
             verbs = ["*"]
+        }
+        {
+            apiGroups = ["networking.k8s.io"]
+            resources = ["ingresses", "ingresses/status"]
+            verbs = ["*"]
+        }
+        {
+            apiGroups = ["networking.k8s.io"]
+            resources = ["networkpolicies"]
+            verbs = ["get", "list", "watch"]
         }
     ]
 }
@@ -232,10 +253,31 @@ _intraTenantIngress = {
     ]
 }
 
-# isolated: yalnızca DNS egress. open: DNS + tenant-içi serbest. custom: boş
-# (default-deny dışında hiçbir kural — tenant sonradan kendi CNP'sini ekler).
+# DÜZELTME (Faz 12g, code review #6): "isolated" tier intra-tenant trafiği
+# TAMAMEN kesiyordu (yalnızca DNS) — ama tenant'ın kendi Postgres'i (CNPG
+# composition'ı) platform tarafından sağlanan, tenant'ın seçmediği ZORUNLU
+# bir bağımlılık; bir "peer app pod" değil. Bu kural olmadan isolated tier'daki
+# HİÇBİR uygulama pod'u kendi veritabanına bağlanamıyordu. "custom" tier'a
+# BİLİNÇLİ OLARAK dokunulmadı — kontrat: tenant kendi CNP'sini kendisi ekler.
+_allowTenantPostgres = {
+    toEndpoints = [
+        {
+            matchLabels = {"k8s:io.kubernetes.pod.namespace" = nsName}
+            matchExpressions = [
+                {key = "cnpg.io/cluster", operator = "Exists"}
+            ]
+        }
+    ]
+    toPorts = [
+        {ports = [{port = "5432", protocol = "TCP"}]}
+    ]
+}
+
+# isolated: DNS + kendi Postgres'i. open: DNS + tenant-içi serbest (Postgres
+# zaten dahil). custom: boş (default-deny dışında hiçbir kural — tenant
+# sonradan kendi CNP'sini ekler).
 _egressByTier = {
-    "isolated" = [_allowDns]
+    "isolated" = [_allowDns, _allowTenantPostgres]
     "open" = [_allowDns, _intraTenantEgress]
     "custom" = []
 }
@@ -380,7 +422,15 @@ serviceAccount = {
 # iki composition ARTIK KESİN olarak aynı rol adına varır.
 _vaultBootstrapScript = """
 set -e
-export VAULT_ADDR=http://vault-active.vault.svc.cluster.local:8200
+# DÜZELTME (Faz 12g, code review #8): Vault listener'ı artık kendi
+# PKI'sinden imzalı bir sertifikayla HTTPS dinliyor (bkz. bootstrap/
+# 03-pki.sh:enable_vault_tls). VAULT_CACERT, aşağıdaki Job spec'inin
+# "vault-ca" volume'ü ile mount edilen "vault-ca-bundle" ConfigMap'ini
+# (vault namespace'i, root CA) işaret eder — bu olmadan `vault write`
+# çağrılarının HEPSİ "x509: certificate signed by unknown authority" ile
+# başarısız olurdu.
+export VAULT_ADDR=https://vault-active.vault.svc.cluster.local:8200
+export VAULT_CACERT=/etc/vault-ca/ca.crt
 TOKEN=$(vault write -field=token auth/kubernetes/login role=vault-tenant-bootstrap jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token)
 export VAULT_TOKEN=$TOKEN
 
@@ -402,6 +452,17 @@ path "kv/data/tenants/${nsName}/*" {
 }
 path "kv/metadata/tenants/${nsName}/*" {
   capabilities = ["read", "list", "delete"]
+}
+# DÜZELTME (Faz 12g, code review #8): tenant'ın KENDİ cert-manager Issuer'ı
+# (aşağıda), Vault'un artık HTTPS olan listener'ına GÜVENMEK için bir CA
+# bundle Secret'ı gerektirir. Bootstrap (03-pki.sh:enable_vault_tls), CA
+# zincirini TÜM tenant'ların PAYLAŞTIĞI, salt-okunur bu path'e yazar — path
+# "tenants/*" ÖNEKİ ALTINDA DEĞİL, bilinçli olarak ayrı bir platform-genelinde
+# path ("platform/vault-ca-bundle") — tenant izolasyonunu İHLAL ETMEZ çünkü
+# CA sertifikası zaten GİZLİ DEĞİLDİR (bir CA sertifikasının KAMUYA açık
+# olması PKI'nin doğası gereğidir).
+path "kv/data/platform/vault-ca-bundle" {
+  capabilities = ["read"]
 }
 EOT
 
@@ -448,11 +509,24 @@ vaultBootstrapJob = {
             spec = {
                 serviceAccountName = "vault-tenant-bootstrap"
                 restartPolicy = "OnFailure"
+                # DÜZELTME (Faz 12g, code review #8): Vault HTTPS'e geçtikten
+                # sonra bu Job'un `vault` CLI çağrılarının sunucu sertifikasına
+                # GÜVENEBİLMESİ için root CA'yı mount eder (bkz. yukarıdaki
+                # _vaultBootstrapScript'teki VAULT_CACERT).
+                volumes = [{
+                    name = "vault-ca"
+                    configMap = {name = "vault-ca-bundle"}
+                }]
                 containers = [{
                     name = "vault"
                     image = "hashicorp/vault:1.18.1"
                     command = ["/bin/sh", "-c"]
                     args = [_vaultBootstrapScript]
+                    volumeMounts = [{
+                        name = "vault-ca"
+                        mountPath = "/etc/vault-ca"
+                        readOnly = True
+                    }]
                     # DÜZELTME (Faz 12c, GERÇEK bir kind cluster'ında
                     # `require-pod-resources` Kyverno politikası Enforce
                     # moduna alınınca keşfedildi): bu container'ın hiç
@@ -540,6 +614,67 @@ esoTokenRequestRoleBinding = {
 # `pki-int-*/sign/tenant-*` glob'unu içerecek şekilde GÜNCELLENDİ (Faz 3'ün
 # dosyası, bu faz için genişletildi — bkz. PLATFORM_CONTEXT.md Faz 6 günlüğü).
 # =============================================================================
+# DÜZELTME (Faz 12g, code review #8): Vault listener'ı artık HTTPS —
+# tenant Issuer'ının sunucu sertifikasına güvenebilmesi için, ESO ile aynı
+# round-trip deseni kullanılıyor (bkz. postgresql/function.k §7'nin "neden
+# ExternalSecret" yorumu): CA zinciri Vault'un KV'sinden çekilip
+# `vault-ca-bundle` adında bir Secret'a yazılır, Issuer da o Secret'ı
+# `caBundleSecretRef` ile referans alır (cert-manager'ın Vault issuer'ı
+# yalnızca AYNI namespace'teki bir Secret'ı ya da inline `caBundle`'ı kabul
+# eder — ConfigMap/cross-namespace YOK, bu yüzden ESO'nun caProvider'ı
+# BURADA kullanılamaz).
+vaultCaSecretStore = {
+    apiVersion = "external-secrets.io/v1beta1"
+    kind = "SecretStore"
+    metadata = {
+        name = "vault-ca-backend"
+        namespace = nsName
+        annotations = _resAnno("secretstore-ca")
+        labels = labels
+    }
+    spec.provider.vault = {
+        server = "https://vault-active.vault.svc.cluster.local:8200"
+        caProvider = {
+            type = "ConfigMap"
+            name = "vault-ca-bundle"
+            namespace = "vault"
+            key = "ca.crt"
+        }
+        path = "kv"
+        version = "v2"
+        auth.kubernetes = {
+            mountPath = "kubernetes"
+            role = "eso-tenant-${nsName}"
+            serviceAccountRef = {
+                name = "eso-tenant-secrets"
+                namespace = nsName
+            }
+        }
+    }
+}
+
+vaultCaExternalSecret = {
+    apiVersion = "external-secrets.io/v1beta1"
+    kind = "ExternalSecret"
+    metadata = {
+        name = "vault-ca-bundle"
+        namespace = nsName
+        annotations = _resAnno("externalsecret-ca")
+        labels = labels
+    }
+    spec = {
+        refreshInterval = "1h"
+        secretStoreRef = {name = "vault-ca-backend", kind = "SecretStore"}
+        target.name = "vault-ca-bundle"
+        data = [
+            {
+                secretKey = "ca.crt"
+                remoteRef = {key = "platform/vault-ca-bundle", property = "ca.crt"}
+            }
+        ]
+    }
+}
+
 issuer = {
     apiVersion = "cert-manager.io/v1"
     kind = "Issuer"
@@ -550,7 +685,8 @@ issuer = {
         labels = labels
     }
     spec.vault = {
-        server = "http://vault-active.vault.svc.cluster.local:8200"
+        server = "https://vault-active.vault.svc.cluster.local:8200"
+        caBundleSecretRef = {name = "vault-ca-bundle", key = "ca.crt"}
         # DÜZELTME: PKI rolü adı artık `tenant-${nsName}` (bkz.
         # _vaultBootstrapScript) — burası ARTIK ${teamName} DEĞİL, aynı
         # role'e işaret etmeli, aksi halde imzalama "role not found" ile
@@ -764,6 +900,8 @@ items = [
     tierNetworkPolicy
     serviceAccount
     vaultBootstrapJob
+    vaultCaSecretStore
+    vaultCaExternalSecret
     issuer
     certManagerServiceAccount
     certManagerTokenRequestRole

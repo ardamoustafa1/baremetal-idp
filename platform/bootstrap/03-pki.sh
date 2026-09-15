@@ -2,9 +2,11 @@
 # =============================================================================
 # Faz 3 — PKI: Vault (HA/Raft) + Kubernetes auth + PKI hiyerarşisi + cert-manager
 #
-#   Vault kurulumu → [İNSAN: init/unseal, bkz. docs/runbooks/vault-unseal.md]
-#     → Kubernetes auth → PKI (root → 3× intermediate) → cert-manager
-#     → ClusterIssuer'lar → test sertifikası (uçtan uca doğrulama)
+#   Vault kurulumu (plaintext) → [İNSAN: init/unseal, bkz.
+#     docs/runbooks/vault-unseal.md] → Kubernetes auth → PKI (root → 3×
+#     intermediate) → Vault listener TLS (kendi PKI'sinden — Faz 12g) →
+#     cert-manager → ClusterIssuer'lar (HTTPS) → test sertifikası
+#     (uçtan uca doğrulama)
 #
 # TASARIM KURALLARI (01/02 ile aynı + PKI'ye özgü olanlar):
 #   1. IDEMPOTENT.
@@ -109,6 +111,21 @@ render() {
   envsubst '${PLATFORM_BASE_DOMAIN}' < "${src}" > "${dst}"
 }
 
+# DÜZELTME (Faz 12g, code review #8): Vault'un TEK listener'ı (loopback
+# 127.0.0.1 DAHİL — pod içinde AYRI bir plaintext listener YOK) artık
+# `enable_vault_tls()` adımından SONRA yalnızca HTTPS dinliyor. `vexec`/
+# `vexec_notoken` bunu `VAULT_TLS_ENABLED` bayrağına göre DİNAMİK olarak
+# seçer — bayrak `enable_vault_tls()` başarıyla tamamlanana kadar "false"
+# kalır (o ana kadar TÜM vexec çağrıları, tıpkı önceden olduğu gibi, düz
+# HTTP kullanmaya devam eder — pki-int-dev henüz yokken/Vault henüz kendi
+# sertifikasını imzalayamazken bu ZATEN tek seçenektir). VAULT_SKIP_VERIFY,
+# yalnızca pod İÇİNDEN loopback'e (127.0.0.1) bağlanırken kullanılır — bu
+# bağlantı zaten `kubectl exec` (Kubernetes RBAC) ile kimlik doğrulanmış bir
+# kanaldan geçer, sertifika doğrulamasının burada tekrar edilmesi gereksiz
+# risk katmadan atlanabilir (bkz. vault-self-tls.md §5'in ÖNERDİĞİ AYNI
+# desen).
+VAULT_TLS_ENABLED="${VAULT_TLS_ENABLED:-false}"
+
 # Vault pod'unda vault CLI çalıştırır. Root/admin işlemleri için VAULT_TOKEN
 # operatörün KENDİ shell'inden geçirilir — asla dosyaya yazılmaz.
 #
@@ -119,18 +136,28 @@ render() {
 # gibi vault'a geçer). Bu, yazarken bir kez yanlış yapılıp sh -c'nin
 # pozisyonel argüman semantiği elle test edilerek düzeltildi.
 vexec() {
+  local addr="http://127.0.0.1:8200" skip_verify=""
+  if [[ "${VAULT_TLS_ENABLED}" == "true" ]]; then
+    addr="https://127.0.0.1:8200"
+    skip_verify='VAULT_SKIP_VERIFY=true; export VAULT_SKIP_VERIFY'
+  fi
   kubectl -n vault exec vault-0 -- sh -c \
-    'VAULT_ADDR=http://127.0.0.1:8200; export VAULT_ADDR
-     VAULT_TOKEN="$1"; export VAULT_TOKEN
+    "VAULT_ADDR=${addr}; export VAULT_ADDR
+     ${skip_verify}
+     VAULT_TOKEN=\"\$1\"; export VAULT_TOKEN
      shift
-     exec vault "$@"' \
+     exec vault \"\$@\"" \
     -- "${VAULT_TOKEN}" "$@"
 }
 
 # Token gerektirmeyen salt-okunur/durum sorguları için (ör. `vault status`)
 vexec_notoken() {
+  local prefix="VAULT_ADDR=http://127.0.0.1:8200"
+  if [[ "${VAULT_TLS_ENABLED}" == "true" ]]; then
+    prefix="VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true"
+  fi
   kubectl -n vault exec vault-0 -- sh -c \
-    'VAULT_ADDR=http://127.0.0.1:8200 vault "$@"' -- "$@"
+    "${prefix} vault \"\$@\"" -- "$@"
 }
 
 require_vault_token() {
@@ -144,7 +171,7 @@ require_vault_token() {
 # 0. Ön kontroller
 # =============================================================================
 preflight() {
-  step "0/6  Ön kontroller"
+  step "0/7  Ön kontroller"
 
   if (( BASH_VERSINFO[0] < 4 )); then
     die "bash 4+ gerekli (bulunan: ${BASH_VERSION})."
@@ -176,7 +203,7 @@ preflight() {
 # 1. Vault kurulumu (Helm) — init/unseal İNSAN EYLEMİDİR, script yalnızca bekler
 # =============================================================================
 install_vault() {
-  step "1/6  Vault (HA / Raft, 3 replika)"
+  step "1/7  Vault (HA / Raft, 3 replika)"
 
   helm_repo hashicorp "${VAULT_HELM_REPO}"
   helm repo update hashicorp >/dev/null
@@ -310,7 +337,7 @@ verify_vault() {
 # 2. Kubernetes Auth Method
 # =============================================================================
 setup_kubernetes_auth() {
-  step "2/6  Vault Kubernetes Auth Method"
+  step "2/7  Vault Kubernetes Auth Method"
   require_vault_token
 
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -508,7 +535,7 @@ verify_kubernetes_auth() {
 # 3. PKI hiyerarşisi: Root CA → 3× Intermediate CA
 # =============================================================================
 setup_pki() {
-  step "3/6  PKI hiyerarşisi (Root → dev/staging/prod Intermediate)"
+  step "3/7  PKI hiyerarşisi (Root → dev/staging/prod Intermediate)"
   require_vault_token
 
   if [[ "${DRY_RUN}" == "true" ]]; then
@@ -581,7 +608,7 @@ setup_pki() {
     # Keycloak için gerçek bir cert-manager Certificate isteği canlı olarak
     # "common name keycloak.apps.example.internal not allowed by this role"
     # ile KESİN olarak REDDEDİLDİ (bu servisler `vault-issuer-dev`'i
-    # kullanıyor — bkz. cert-manager/resources/clusterissuers.yaml — bu
+    # kullanıyor — bkz. cert-manager/resources/clusterissuers.yaml.tpl — bu
     # yüzden yalnızca "dev" rolüne bu ikinci domain eklendi, diğer env
     # rollerine DEĞİL, çünkü platform servisleri şu an yalnızca dev
     # issuer'ı kullanıyor). Bare base domain (alt alan adlarıyla birlikte)
@@ -636,10 +663,169 @@ verify_pki() {
 }
 
 # =============================================================================
-# 4. cert-manager + ClusterIssuer'lar
+# 4. Vault listener TLS (kendi PKI'sinden, self-referential) — Faz 12g,
+#    code review #8'in ÇÖZÜMÜ (bkz. docs/runbooks/vault-self-tls.md — bu
+#    fonksiyon o runbook'un OTOMATİKLEŞTİRİLMİŞ hâlidir).
+#
+# NEDEN BU ADIMDA (PKI'DEN SONRA, cert-manager'DAN ÖNCE): pki-int-dev'in
+# hazır olması GEREKİR (Vault'un kendi sertifikasını buradan imzalatacağız);
+# cert-manager'ın Vault Issuer'ları ise BUNDAN SONRA, Vault ZATEN HTTPS
+# dinlerken kurulmalı — aksi halde `server: http://...` ile kurulup TLS
+# açıldıktan SONRA elle güncellenmesi gerekirdi (iki adımlı, unutulmaya
+# açık bir prosedür). install_cert_manager() ve verify_certificate() zaten
+# `vexec`/`vexec_notoken` kullanıyor — bu fonksiyonun sonunda
+# VAULT_TLS_ENABLED="true" olduğu için o iki adım OTOMATİK olarak HTTPS'e
+# geçer, ayrı bir değişiklik GEREKMEZ.
+# =============================================================================
+enable_vault_tls() {
+  step "4/7  Vault listener TLS (kendi PKI'sinden)"
+  require_vault_token
+
+  if [[ "${DRY_RUN}" == "true" ]]; then
+    log "[dry-run] pki-int-dev/roles/vault-server + vault-server-tls Secret + helm upgrade (TLS overlay)"
+    return 0
+  fi
+
+  if kubectl -n vault get secret vault-server-tls >/dev/null 2>&1; then
+    log "  Secret vault/vault-server-tls zaten var — TLS zaten etkin, adım ATLANIYOR (idempotent)."
+    VAULT_TLS_ENABLED="true"
+    verify_vault_tls
+    return 0
+  fi
+
+  # --- 1) Vault'un KENDİ sunucu sertifikası için PKI rolü ---------------
+  # pki-int-dev kullanılıyor — platform servisleri de (Faz 12c notu, bkz.
+  # setup_pki) yalnızca "dev" issuer'ı kullanıyor; aynı intermediate'i
+  # Vault'un kendi listener'ı için de kullanmak ayrı bir intermediate CA
+  # GEREKTİRMEZ.
+  vexec write pki-int-dev/roles/vault-server \
+    allowed_domains="vault-internal,vault.vault.svc.cluster.local,vault-active.vault.svc.cluster.local" \
+    allow_subdomains=true \
+    allow_bare_domains=true \
+    max_ttl=2160h \
+    key_type=rsa key_bits=2048
+  ok "  pki-int-dev/roles/vault-server tanımlandı"
+
+  # --- 2) TEK sertifika, TÜM pod'ları + Service'leri kapsayan SAN listesiyle
+  # (runbook §3 "basitleştirilmiş öneri" — pod-başına ayrı sertifika/Secret
+  # yönetimi yerine tek bir Secret, tek bir rotasyon noktası).
+  local work; work="$(mktemp -d)"
+  vexec write -format=json pki-int-dev/issue/vault-server \
+    common_name="vault-server" \
+    alt_names="vault-0.vault-internal,vault-1.vault-internal,vault-2.vault-internal,vault.vault.svc.cluster.local,vault-active.vault.svc.cluster.local" \
+    ttl=2160h > "${work}/vault-server-cert.json"
+  jq -r '.data.certificate + "\n" + .data.issuing_ca' "${work}/vault-server-cert.json" > "${work}/tls.crt"
+  jq -r '.data.private_key' "${work}/vault-server-cert.json" > "${work}/tls.key"
+  jq -r '.data.issuing_ca'  "${work}/vault-server-cert.json" > "${work}/issuing-ca.crt"
+
+  kubectl -n vault create secret tls vault-server-tls \
+    --cert="${work}/tls.crt" --key="${work}/tls.key" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  ok "  Secret vault/vault-server-tls oluşturuldu (ttl=2160h / 90 gün)"
+
+  # --- 3) CA zincirini (intermediate + root) diğer bileşenlerin (cert-
+  # manager Issuer'ları, ileride ESO/provider-terraform) GÜVENEBİLMESİ için
+  # dışa aktar — trust-bundles/ önceden yalnızca bir .gitkeep içeren BOŞ bir
+  # yer tutucuydu (bkz. o dizinin ADR-0001'deki niyeti); artık gerçek
+  # kullanımı bu adımdır. install_cert_manager() bu dosyayı base64'leyip
+  # ClusterIssuer'ların `caBundle` alanına yazar.
+  vexec_notoken read -field=certificate pki-root/cert/ca > "${work}/root.crt" 2>/dev/null || \
+    vexec read -format=json pki-root/cert/ca 2>/dev/null | jq -r '.data.certificate' > "${work}/root.crt"
+  cat "${work}/issuing-ca.crt" "${work}/root.crt" > "${work}/vault-ca-chain.pem"
+  mkdir -p "${PKI_DIR}/trust-bundles"
+  cp "${work}/vault-ca-chain.pem" "${PKI_DIR}/trust-bundles/vault-ca-chain.pem"
+  ok "  CA zinciri ${PKI_DIR}/trust-bundles/vault-ca-chain.pem'e yazıldı"
+
+  # --- 3b) Aynı CA'yı ConfigMap olarak dağıt (ESO SecretStore'ların
+  # caProvider'ı VE tenant Job'unun VAULT_CACERT mount'u için) ---------------
+  # DÜZELTME (Faz 12g, code review #8): ESO'nun `caProvider.namespace` alanı
+  # SecretStore'unkinden FARKLI bir namespace'teki bir ConfigMap'i OKUYABİLİR
+  # (controller-seviyesinde bir API çağrısı — kubelet volume mount DEĞİL) —
+  # bu yüzden tenant namespace'lerine AYRI AYRI kopyalamaya gerek yok, tek
+  # bir "vault" ns kopyası yeterli (bkz. compositions/postgresql/function.k,
+  # compositions/tenant/function.k SecretStore'ları). Ama `vaultBootstrapJob`
+  # (compositions/tenant/function.k, crossplane-system namespace'inde çalışır)
+  # bunu bir kubelet ConfigMap VOLUME'ü olarak mount ediyor — Kubernetes
+  # ConfigMap volume'leri SADECE AYNI namespace'ten okunabilir (cross-
+  # namespace YOK) — bu yüzden AYNI ConfigMap crossplane-system'e de
+  # kopyalanmalı.
+  local ns
+  for ns in vault crossplane-system; do
+    kubectl -n "${ns}" create configmap vault-ca-bundle \
+      --from-file="ca.crt=${work}/vault-ca-chain.pem" \
+      --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  done
+  ok "  ConfigMap vault-ca-bundle → namespace vault VE crossplane-system"
+
+  # --- 3c) AYNI CA'yı Vault'un KENDİ KV'sine de yaz — compositions/tenant/
+  # function.k'nin `vaultCaExternalSecret`'i (her tenant namespace'inde,
+  # ESO round-trip'i ile) buradan okuyup tenant Issuer'ının `caBundleSecretRef`
+  # ile kullandığı Secret'ı üretir. ConfigMap (crossplane-system/vault için)
+  # KUBELET volume mount'u gerektiren yerlerde; KV ise ESO'nun CROSS-
+  # NAMESPACE OKUYAMADIĞI (yalnızca caProvider AYNI-namespace-DIŞI ConfigMap/
+  # Secret OKUYABİLİR, ama ExternalSecret'in KENDİ ÜRETTİĞİ hedef Secret HER
+  # ZAMAN kendi namespace'indedir) senaryoda tercih edildi — her tenant
+  # kendi `vault-ca-bundle` Secret'ını KV'den KENDİ ESO kimliğiyle çeker.
+  kubectl -n vault cp "${work}/vault-ca-chain.pem" "vault-0:/tmp/vault-ca-chain.pem"
+  vexec kv put -mount=kv platform/vault-ca-bundle "ca.crt=@/tmp/vault-ca-chain.pem"
+  ok "  kv/platform/vault-ca-bundle yazıldı (tenant Issuer'larının caBundleSecretRef'i için)"
+
+  rm -rf "${work}"
+
+  # --- 4) helm upgrade — TLS overlay. --wait KULLANILMIYOR (install_vault()
+  # ile AYNI gerekçe: rolling restart sırasında pod'lar GEÇİCİ olarak
+  # sealed/not-ready görünür; unseal aşağıda ayrıca doğrulanır).
+  helm upgrade --install vault hashicorp/vault \
+    --namespace vault --version "${VAULT_CHART_VERSION}" \
+    -f "${VAULT_DIR}/values.yaml" \
+    -f "${VAULT_DIR}/values-tls.yaml" \
+    --timeout 10m
+
+  local pod
+  for pod in vault-0 vault-1 vault-2; do
+    wait_for "${pod} pod Running (TLS restart sonrası)" 300 10 \
+      bash -c "kubectl -n vault get pod ${pod} -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running"
+  done
+
+  VAULT_TLS_ENABLED="true"
+  verify_vault_tls
+
+  # --- 5) setup_pki()'nin `config/urls`'ü (issuing_certificates/
+  # crl_distribution_points) TLS'ten ÖNCE http:// ile yazılmıştı (o adım
+  # sırasında Vault henüz plaintext'ti — BAŞKA türlüsü mümkün değildi,
+  # bkz. yukarıdaki NEDEN yorumu). Artık listener HTTPS olduğuna göre bu
+  # metadata URL'lerini de günceliyoruz — sertifikaların AIA/CRL
+  # uzantılarında GERÇEK, ERİŞİLEBİLİR bir adres taşımaları için.
+  local mount
+  vexec write pki-root/config/urls \
+    issuing_certificates="https://vault-active.vault.svc.cluster.local:8200/v1/pki-root/ca" \
+    crl_distribution_points="https://vault-active.vault.svc.cluster.local:8200/v1/pki-root/crl"
+  for mount in pki-int-dev pki-int-staging pki-int-prod; do
+    vexec write "${mount}/config/urls" \
+      issuing_certificates="https://vault-active.vault.svc.cluster.local:8200/v1/${mount}/ca" \
+      crl_distribution_points="https://vault-active.vault.svc.cluster.local:8200/v1/${mount}/crl"
+  done
+  ok "  PKI config/urls → https (pki-root + pki-int-{dev,staging,prod})"
+}
+
+# Her pod restart sonrası (transit auto-unseal, Faz 12e) OTOMATİK unseal
+# olmalı — burada yalnızca bunun GERÇEKTEN gerçekleştiğini ve listener'ın
+# artık HTTPS ile yanıt verdiğini doğruluyoruz.
+verify_vault_tls() {
+  log "DOĞRULAMA: Vault listener TLS"
+  local i
+  for i in 0 1 2; do
+    wait_for "vault-${i} unsealed (HTTPS, auto-unseal)" 180 10 \
+      bash -c "kubectl -n vault exec vault-${i} -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status -format=json' 2>/dev/null | jq -e '.sealed == false' >/dev/null"
+  done
+  ok "Vault listener TLS etkin (HTTPS, pki-int-dev/roles/vault-server'dan imzalı)"
+}
+
+# =============================================================================
+# 5. cert-manager + ClusterIssuer'lar
 # =============================================================================
 install_cert_manager() {
-  step "4/6  cert-manager + Vault-backed ClusterIssuer'lar"
+  step "5/7  cert-manager + Vault-backed ClusterIssuer'lar"
 
   helm_repo jetstack "${CERT_MANAGER_HELM_REPO}"
   helm repo update jetstack >/dev/null
@@ -662,10 +848,23 @@ install_cert_manager() {
   wait_for "cert-manager cainjector" 300 10 \
     kubectl -n cert-manager rollout status deployment/cert-manager-cainjector --timeout=5s
 
+  # DÜZELTME (Faz 12g, code review #8): ClusterIssuer'lar artık Vault'un
+  # HTTPS listener'ına (enable_vault_tls() adımı) bağlanıyor — caBundle,
+  # o adımın yazdığı CA zincirinden BASE64 olarak üretilip .tpl'e
+  # envsubst edilir.
+  [[ -f "${PKI_DIR}/trust-bundles/vault-ca-chain.pem" ]] || \
+    die "Vault CA zinciri yok (${PKI_DIR}/trust-bundles/vault-ca-chain.pem) — 'enable_vault_tls' adımı çalıştırılmadı mı?"
+  VAULT_CA_BUNDLE_B64="$(base64 < "${PKI_DIR}/trust-bundles/vault-ca-chain.pem" | tr -d '\n')"
+  export VAULT_CA_BUNDLE_B64
+  mkdir -p "${CERT_MANAGER_DIR}/rendered"
+  envsubst '${VAULT_CA_BUNDLE_B64}' \
+    < "${CERT_MANAGER_DIR}/resources/clusterissuers.yaml.tpl" \
+    > "${CERT_MANAGER_DIR}/rendered/clusterissuers.yaml"
+
   # Webhook hazır olduktan hemen sonra ClusterIssuer apply'ı yarış (race)
   # yapabilir — kısa bir retry.
   local tries=0
-  until kubectl apply -f "${CERT_MANAGER_DIR}/resources/clusterissuers.yaml"; do
+  until kubectl apply -f "${CERT_MANAGER_DIR}/rendered/clusterissuers.yaml"; do
     tries=$(( tries + 1 )); (( tries > 6 )) && die "ClusterIssuer'lar apply edilemedi"
     warn "  webhook henüz hazır değil, 10s sonra tekrar (${tries}/6)"; sleep 10
   done
@@ -707,7 +906,7 @@ verify_cert_manager() {
 # 5. Uçtan uca test: örnek Certificate → Vault üzerinden imzalanmış mı?
 # =============================================================================
 verify_certificate() {
-  step "5/6  Uçtan uca sertifika testi"
+  step "6/7  Uçtan uca sertifika testi"
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log "[dry-run] test sertifikası uygulanıp doğrulanacaktı"
@@ -810,11 +1009,21 @@ main() {
 
   preflight
 
+  # VAULT_TLS_ENABLED, aşağıdaki adımlar sırasıyla ÇALIŞMADIĞI sürece (ör.
+  # --only ile tek bir adım seçildiğinde) "false" kalır; bu durumda vexec
+  # otomatik olarak düz HTTP'ye düşer. Vault zaten TLS'e geçmişse (Secret
+  # vault-server-tls mevcutsa) `enable_vault_tls` bunu algılayıp bayrağı
+  # kendisi "true" yapar — bkz. o fonksiyonun idempotent kısa yolu.
+  if kubectl -n vault get secret vault-server-tls >/dev/null 2>&1; then
+    VAULT_TLS_ENABLED="true"
+  fi
+
   if [[ "${VERIFY_ONLY}" == "true" ]]; then
     should_run vault        && verify_vault              || true
     should_run vault        && verify_vault_audit         || true
     should_run auth         && verify_kubernetes_auth     || true
     should_run pki          && verify_pki                 || true
+    should_run vault-tls    && verify_vault_tls            || true
     should_run cert-manager && verify_cert_manager        || true
     summary
     return 0
@@ -823,6 +1032,7 @@ main() {
   should_run vault        && install_vault
   should_run auth         && setup_kubernetes_auth
   should_run pki          && setup_pki
+  should_run vault-tls    && enable_vault_tls
   should_run cert-manager && install_cert_manager
   should_run cert-test    && verify_certificate
 

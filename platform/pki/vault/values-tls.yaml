@@ -1,0 +1,83 @@
+# =============================================================================
+# Vault listener TLS — İKİNCİ AŞAMA overlay (Faz 12g, code review #8'in
+# çözümü). `values.yaml` (BİRİNCİ AŞAMA, tls_disable=1) ile BİRLİKTE
+# `-f values.yaml -f values-tls.yaml` olarak uygulanır — 03-pki.sh'in
+# `enable_vault_tls()` adımı (bkz. docs/runbooks/vault-self-tls.md'nin
+# OTOMATİKLEŞTİRİLMİŞ hâli).
+#
+# NEDEN AYRI BİR DOSYA, values.yaml'IN İÇİNE GÖMÜLÜ DEĞİL: Vault'un KENDİ
+# sertifikası KENDİ PKI'sinden (pki-int-dev) imzalanıyor — ama pki-int-dev
+# mount'u Vault'un KENDİSİ zaten ayakta/unsealed OLMADAN var olamaz. Yani
+# ilk `helm install` MUTLAKA tls_disable=1 ile (değerler dosyasının BİRİNCİ
+# hâli) yapılmak ZORUNDADIR; bu overlay yalnızca pki-int-dev hazır olduktan
+# VE `vault-server-tls` Secret'ı gerçek bir Vault-imzalı sertifikayla
+# oluşturulduktan SONRA, İKİNCİ bir `helm upgrade` ile eklenir. values.yaml
+# içine statik olarak gömülseydi, SIFIRDAN bir kurulumda ilk `helm install`
+# var olmayan bir Secret'ı mount etmeye çalışıp BAŞARISIZ olurdu.
+#
+# GERİ ALMA: yalnızca bu dosyayı `-f` listesinden çıkarıp `helm upgrade`'i
+# tekrar çalıştırın (bkz. vault-self-tls.md §6) — values.yaml tek başına
+# eski tls_disable=1 davranışına döner.
+#
+# KAPSAM DIŞI (bilinçli): `vault-unseal/` (Transit auto-unseal için
+# kullanılan İKİNCİL, küçük Vault örneği) bu overlay'in KAPSAMINDA DEĞİL —
+# yalnızca ana Vault'a (compositions'ların/cert-manager'ın/ESO'nun bağlandığı
+# örnek) bağlanır. vault-unseal örneği tenant verisi taşımaz, yalnızca ana
+# Vault'un auto-unseal'ı için KMS-benzeri bir transit anahtarı sağlar; kendi
+# TLS'i ayrı, daha düşük öncelikli bir teknik borç maddesi olarak kalır.
+# =============================================================================
+
+global:
+  tlsDisable: false
+
+server:
+  volumes:
+    - name: vault-server-tls
+      secret:
+        secretName: vault-server-tls
+
+  volumeMounts:
+    - name: vault-server-tls
+      mountPath: /vault/userconfig/vault-server-tls
+      readOnly: true
+
+  ha:
+    raft:
+      # DÜZELTME: base values.yaml'daki `config` bloğuyla AYNI (retry_join/
+      # service_registration/seal "transit" DEĞİŞMEDİ) — yalnızca `listener
+      # "tcp"` bloğu TLS'e geçirildi VE retry_join adresleri http→https
+      # oldu (Vault, retry_join sırasında peer'ın kendi listener şemasını
+      # kullanır — hedef node artık yalnızca HTTPS dinliyor).
+      config: |
+        ui = true
+
+        listener "tcp" {
+          address         = "[::]:8200"
+          cluster_address = "[::]:8201"
+          tls_disable     = false
+          tls_cert_file   = "/vault/userconfig/vault-server-tls/tls.crt"
+          tls_key_file    = "/vault/userconfig/vault-server-tls/tls.key"
+        }
+
+        storage "raft" {
+          path = "/vault/data"
+
+          retry_join {
+            leader_api_addr = "https://vault-0.vault-internal:8200"
+          }
+          retry_join {
+            leader_api_addr = "https://vault-1.vault-internal:8200"
+          }
+          retry_join {
+            leader_api_addr = "https://vault-2.vault-internal:8200"
+          }
+        }
+
+        service_registration "kubernetes" {}
+
+        seal "transit" {
+          address         = "http://vault-unseal.vault-unseal.svc.cluster.local:8200"
+          disable_renewal = "false"
+          key_name        = "autounseal"
+          mount_path      = "transit/"
+        }

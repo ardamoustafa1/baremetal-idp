@@ -3,7 +3,7 @@
 | Dosya | İçerik |
 |---|---|
 | `values.yaml` | cert-manager Helm chart değerleri |
-| `resources/clusterissuers.yaml` | 3 ClusterIssuer: `vault-issuer-{dev,staging,prod}` |
+| `resources/clusterissuers.yaml.tpl` (envsubst render edilir → `rendered/clusterissuers.yaml`) | 3 ClusterIssuer: `vault-issuer-{dev,staging,prod}` |
 | `resources/servicemonitor.yaml` | Faz 4 (Prometheus Operator CRD'si) için hazır, koşullu uygulanır |
 | `test-certificate.yaml.tpl` | Uçtan uca doğrulama için tek seferlik test kaynağı — **ArgoCD'nin izlediği `resources/` dizininin DIŞINDA**, kalıcı değil |
 

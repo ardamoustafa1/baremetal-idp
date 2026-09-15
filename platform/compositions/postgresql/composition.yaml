@@ -259,9 +259,52 @@ spec:
             }
 
             # =============================================================================
-            # 5. CiliumNetworkPolicy — Tenant'ın default-deny'sinin ÜSTÜNE EKLENEN,
-            #    yalnızca 5432 portuna aynı-tenant erişimi izni (additive, bozmaz)
+            # 5. CiliumNetworkPolicy — Tenant'ın default-deny'sinin ÜSTÜNE EKLENEN, CNPG
+            #    Postgres pod'unun (hem ingress HEM egress yönünde) ihtiyaç duyduğu TÜM
+            #    trafik (additive, bozmaz)
+            #
+            # DÜZELTME (Faz 12g, code review #6): Bu politika eskiden YALNIZCA ingress
+            # tanımlıyordu (aynı-ns'ten 5432). Tenant'ın defaultDenyPolicy'si
+            # (endpointSelector={} + boş ingress/egress) TÜM pod'lara — Postgres pod'u
+            # dahil — uygulanıyor; egress bölümü olmayan bir politika egress'i
+            # "kısıtlamaz" değil, mevcut deny-all'ı DEĞİŞTİRMEZ. Yani Postgres pod'unun
+            # egress'i sıfırdı: DNS çözümü YOK, replica→primary streaming replication
+            # YOK (replica'nın EGRESS'i engelli — primary'nin ingress izni tek başına
+            # yetmiyor, Cilium her iki yönü de ayrı ayrı uygular), Ceph RGW'ye yedekleme
+            # YOK. Aşağıda dört ayrı eksik kapatıldı:
+            #   1) DNS egress (kube-dns) — resolv olmadan hiçbir bağlantı kurulamaz.
+            #   2) Aynı-ns egress 5432 — replica'nın primary'ye/primary'nin replica'ya
+            #      streaming replication için EGRESS izni (ingress zaten vardı).
+            #   3) Ceph RGW'ye egress (rook-ceph ns, port 80) — barmanObjectStore
+            #      (bkz. _rgwEndpoint) olmadan CNPG hiçbir WAL/base backup gönderemez.
+            #   4) Prometheus'tan (observability ns) metrics portuna ingress — aksi
+            #      halde yukarıdaki ServiceMonitor'un scrape hedefi network seviyesinde
+            #      erişilemez kalır, metrik toplanmaz.
+            # CNPG operatörünün pod'a doğrudan (instance-manager, port 8000) erişimi
+            # BİLİNÇLİ OLARAK eklenmedi: operatör henüz bu repoda bootstrap edilmedi
+            # (control-plane/README.md: "⬜ Faz 4"). Faz 4'te operatör kurulunca aynı
+            # desenle (cnpg-system ns'inden ingress) eklenmeli.
             # =============================================================================
+            _pgAllowDns = {
+                toEndpoints = [
+                    {
+                        matchLabels = {
+                            "k8s:io.kubernetes.pod.namespace" = "kube-system"
+                            "k8s:k8s-app" = "kube-dns"
+                        }
+                    }
+                ]
+                toPorts = [
+                    {
+                        ports = [
+                            {port = "53", protocol = "UDP"}
+                            {port = "53", protocol = "TCP"}
+                        ]
+                        rules.dns = [{matchPattern = "*"}]
+                    }
+                ]
+            }
+
             networkPolicy = {
                 apiVersion = "cilium.io/v2"
                 kind = "CiliumNetworkPolicy"
@@ -280,6 +323,33 @@ spec:
                             ]
                             toPorts = [
                                 {ports = [{port = "5432", protocol = "TCP"}]}
+                            ]
+                        }
+                        {
+                            fromEndpoints = [
+                                {matchLabels = {"k8s:io.kubernetes.pod.namespace" = "observability"}}
+                            ]
+                            toPorts = [
+                                {ports = [{port = "9187", protocol = "TCP"}]}
+                            ]
+                        }
+                    ]
+                    egress = [
+                        _pgAllowDns
+                        {
+                            toEndpoints = [
+                                {matchLabels = {"k8s:io.kubernetes.pod.namespace" = tenantRef}}
+                            ]
+                            toPorts = [
+                                {ports = [{port = "5432", protocol = "TCP"}]}
+                            ]
+                        }
+                        {
+                            toEndpoints = [
+                                {matchLabels = {"k8s:io.kubernetes.pod.namespace" = "rook-ceph"}}
+                            ]
+                            toPorts = [
+                                {ports = [{port = "80", protocol = "TCP"}]}
                             ]
                         }
                     ]
@@ -332,7 +402,23 @@ spec:
                 spec = {
                     provider = {
                         vault = {
-                            server = "http://vault-active.vault.svc.cluster.local:8200"
+                            # DÜZELTME (Faz 12g, code review #8): Vault listener'ı artık
+                            # kendi PKI'sinden imzalı bir sertifikayla HTTPS dinliyor
+                            # (bkz. bootstrap/03-pki.sh:enable_vault_tls). caProvider,
+                            # bootstrap'ın "vault" namespace'inde oluşturduğu
+                            # "vault-ca-bundle" ConfigMap'ini (root CA, bkz. trust-
+                            # bundles/vault-ca-chain.pem) İŞARET EDER — ESO, farklı bir
+                            # namespace'teki (bu SecretStore'un kendi namespace'i olan
+                            # tenantRef DEĞİL) bir ConfigMap'i okuyabilir (chart'ın
+                            # varsayılan ClusterRole'ü configmaps için cluster-geneli
+                            # get/list/watch içerir).
+                            server = "https://vault-active.vault.svc.cluster.local:8200"
+                            caProvider = {
+                                type = "ConfigMap"
+                                name = "vault-ca-bundle"
+                                namespace = "vault"
+                                key = "ca.crt"
+                            }
                             path = "kv"
                             version = "v2"
                             auth = {
@@ -494,6 +580,7 @@ spec:
                 externalSecret
                 catalogInfoConfigMap
             ] + _pdbItems
+
     - step: automatically-detect-ready-composed-resources
       functionRef:
         name: function-auto-ready
