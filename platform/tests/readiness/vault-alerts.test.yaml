@@ -1,0 +1,47 @@
+evaluation_interval: 1m
+rule_files:
+- vault.rules.yaml
+tests:
+- alert_rule_test:
+  - alertname: VaultCertificateExpiring
+    eval_time: 6m
+    exp_alerts:
+    - exp_annotations:
+        description: Run the documented 03-pki.sh --only vault-tls renewal, then verify
+          all Raft peers.
+        summary: Vault TLS certificate expires within 30 days
+      exp_labels:
+        service: vault-tls-probe
+        severity: warning
+  input_series:
+  - series: probe_success{service="vault-tls-probe"}
+    values: 1x20
+  - series: up{service="vault-tls-probe"}
+    values: 1x20
+  - series: probe_ssl_earliest_cert_expiry{service="vault-tls-probe"}
+    values: 2505600x20
+  interval: 1m
+- alert_rule_test:
+  - alertname: VaultTLSMonitorMissing
+    eval_time: 11m
+    exp_alerts:
+    - exp_annotations:
+        summary: Vault certificate monitoring is unavailable
+      exp_labels:
+        severity: critical
+        service: vault-tls-probe
+  input_series: []
+  interval: 1m
+- alert_rule_test:
+  - alertname: VaultTLSProbeFailed
+    eval_time: 6m
+    exp_alerts:
+    - exp_annotations:
+        summary: Vault HTTPS health or certificate verification failed
+      exp_labels:
+        service: vault-tls-probe
+        severity: critical
+  input_series:
+  - series: probe_success{service="vault-tls-probe"}
+    values: '0x20'
+  interval: 1m

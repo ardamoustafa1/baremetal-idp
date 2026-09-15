@@ -139,3 +139,21 @@ jobs:
         run: yarn install --immutable
       - name: TypeScript tip kontrolü (tsc --noEmit)
         run: yarn tsc
+
+      - name: Portal tenant authorization regression tests
+        run: yarn workspace backend test --watch=false --runInBand
+
+  release-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install PyYAML==6.0.2 jsonschema==4.23.0
+      - name: TLS, schema and backup coverage regressions
+        run: python3 -m unittest discover -s platform/tests/readiness -p 'test_*.py'
+      - name: Vault expiry, TLS failure and missing monitor alerts
+        run: bash platform/tests/readiness/test-alerts.sh

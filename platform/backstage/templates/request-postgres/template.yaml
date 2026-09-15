@@ -93,6 +93,12 @@ spec:
             - medium
             - large
   steps:
+  - id: authorize
+    name: Tenant yetkisini doğrula
+    action: platform:authorize
+    input:
+      operation: request-postgres
+      tenantRef: ${{ parameters.tenantRef }}
   - id: fetch
     name: Şablonu doldur
     action: fetch:template

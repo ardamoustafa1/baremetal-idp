@@ -26,7 +26,8 @@ backend.add(import('@backstage/plugin-techdocs-backend'));
 // auth plugin
 backend.add(import('@backstage/plugin-auth-backend'));
 // See https://backstage.io/docs/backend-system/building-backends/migrating#the-auth-plugin
-backend.add(import('@backstage/plugin-auth-backend-module-oidc-provider'));
+backend.add(import('./oidc'));
+backend.add(import('./scaffolder'));
 backend.add(import('./platformCatalog'));
 backend.add(import('./crossplane'));
 // See https://backstage.io/docs/auth/guest/provider
@@ -43,9 +44,7 @@ backend.add(import('@backstage/plugin-catalog-backend-module-logs'));
 // permission plugin
 backend.add(import('@backstage/plugin-permission-backend'));
 // See https://backstage.io/docs/permissions/getting-started for how to create your own permission policy
-backend.add(
-  import('@backstage/plugin-permission-backend-module-allow-all-policy'),
-);
+backend.add(import('./permissions'));
 
 // search plugin
 backend.add(import('@backstage/plugin-search-backend'));

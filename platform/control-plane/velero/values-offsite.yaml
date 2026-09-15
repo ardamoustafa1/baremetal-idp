@@ -41,6 +41,8 @@ schedules:
     schedule: "0 3 * * *"
     useOwnerReferencesInBackup: false
     template:
+      snapshotVolumes: false
+      defaultVolumesToFsBackup: false
       storageLocation: default
       ttl: "720h"
       includedNamespaces: ["*"]
@@ -54,6 +56,8 @@ schedules:
     schedule: "20 3 * * *"
     useOwnerReferencesInBackup: false
     template:
+      snapshotVolumes: false
+      defaultVolumesToFsBackup: false
       storageLocation: offsite
       ttl: "720h"
       includedNamespaces: ["*"]

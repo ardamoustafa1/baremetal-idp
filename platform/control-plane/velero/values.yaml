@@ -10,20 +10,14 @@
 # true` ayarlandığında ANLAMLI olur (bkz. .env.example) — script bu durumda
 # İKİNCİ bir profili AYNI Secret'a ekler.
 #
-# CSI VOLUME SNAPSHOT ENTEGRASYONU BİLİNÇLİ OLARAK KAPSAM DIŞI (bkz. docs/
-# runbooks/disaster-recovery.md §3.1/§8a — GERÇEK bir DR tatbikatında CNPG
-# Postgres verisinin Velero ile restore EDİLEMEDİĞİ CANLI olarak kanıtlandı;
-# bu, snapshot.storage.k8s.io CRD'lerinin/VolumeSnapshotClass'ların HİÇ
-# kurulu olmamasından kaynaklanıyor ve o runbook'ta AYRI, sonraki bir iş
-# olarak zaten işaretli). Bu kurulum K8s OBJE yedeklemesini (namespace,
-# RBAC, Secret, CRD, Certificate/Issuer vb.) GERÇEK ve ÇALIŞIR kılar — PV
-# İÇERİĞİ için CNPG'nin KENDİ Barman/PITR mekanizması (compositions/
-# postgresql/function.k §3) birincil, bağımsız yoldur.
+# File-system backup uses explicit pod volume annotations. Native database
+# backups remain separate; do not copy live database files as a consistent dump.
+# Before release, verify every Bound PVC with tests/readiness/check-live.py.
 # =============================================================================
 
 initContainers:
   - name: velero-plugin-for-aws
-    image: velero/velero-plugin-for-aws:v1.11.1
+    image: velero/velero-plugin-for-aws:v1.10.1
     imagePullPolicy: IfNotPresent
     volumeMounts:
       - mountPath: /target
@@ -47,16 +41,19 @@ configuration:
         s3Url: "http://rook-ceph-rgw-platform-store.rook-ceph.svc.cluster.local:80"
         s3ForcePathStyle: "true"
         insecureSkipTLSVerify: "true"   # RGW henüz TLS'siz (aynı teknik borç, bkz. PLATFORM_CONTEXT)
-  # NOT: volumeSnapshotLocation BİLİNÇLİ OLARAK BOŞ — yukarıdaki "CSI volume
-  # snapshot entegrasyonu kapsam dışı" notuna bakın. Boş bırakmak Velero'nun
-  # K8s obje yedeklemesini ENGELLEMEZ, yalnızca PV snapshot alma girişimini
-  # atlar (spec.defaultVolumesToFsBackup de KASITLI OLARAK false — aksi
-  # halde her backup, snapshot altyapısı olmadan dosya-seviyesi (fs-backup/
-  # restic) bir PV kopyalama girişimine kalkışır ve CNPG'nin KENDİ, tutarlı
-  # PITR mekanizmasıyla ÇAKIŞIR).
   volumeSnapshotLocation: []
+  defaultVolumesToFsBackup: false
+  uploaderType: kopia
 
-deployNodeAgent: false   # restic/kopia dosya-seviyesi yedekleme — yukarıdaki NOT ile aynı gerekçeyle kapalı
+# Opt in with backup.velero.io/backup-volumes on the workload's pod template.
+# All tainted nodes must also be covered; hostPath is required by Velero FSB.
+deployNodeAgent: true
+nodeAgent:
+  tolerations:
+    - operator: Exists
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 1000m, memory: 1Gi}
 
 credentials:
   useSecret: true
@@ -73,6 +70,8 @@ schedules:
     schedule: "0 3 * * *"
     useOwnerReferencesInBackup: false
     template:
+      snapshotVolumes: false
+      defaultVolumesToFsBackup: false
       storageLocation: default
       ttl: "720h"   # 30 gün saklama
       includedNamespaces: ["*"]

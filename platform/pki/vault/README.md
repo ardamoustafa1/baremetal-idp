@@ -104,35 +104,22 @@ export VAULT_TOKEN="<root veya yeterli yetkili bir token>"
 ./platform/bootstrap/03-pki.sh --only vault-tls
 ```
 
-**Alarm/uyarı henüz bir Prometheus/Alertmanager kuralına BAĞLI DEĞİL**
-(bu turda yapılmadı) — üretimde bu 90 günlük pencereyi izleyen bir
-PrometheusRule (sertifikanın `notAfter` tarihine göre) EKLENMELİDİR;
-`cert-manager` zaten kendi imzaladığı sertifikalar için böyle bir alert'e
-sahip (bkz. `control-plane/observability/resources/certmanager-expiry-
-rules.yaml`) — bu, Vault'un KENDİ sertifikası için AYNI desenin BENZERİ,
-ayrı bir iş olarak kalır (Vault'un sertifikası cert-manager'ın
-İZLEMEDİĞİ bir yoldan geliyor, bir metrik olarak DIŞARI AÇILMIYOR).
+Vault listener sertifikası `observability/resources/vault-tls-monitor.yaml`
+ile her dakika gerçek HTTPS bağlantısı üzerinden izlenir. Blackbox exporter
+`vault-ca-bundle` CA’sıyla zincir ve isim kontrolü yapar. Prometheus kuralları
+30 gün, 7 gün, başarısız bağlantı ve kayıp izleme sinyali için alarm üretir.
+Kaynaklar 05-observability bootstrap’ı ve observability Argo uygulamasına bağlıdır.
+Alertmanager alıcısına gerçek teslimat canlı kabulde doğrulanmalıdır.
 
-**DÜZELTME (code review #10, YÜKSEK) — interim, ÇALIŞIR bir kontrol
-komutu eklendi:** tam bir Prometheus entegrasyonu OLMASA da,
-`verify_vault_tls()` artık SUNULAN sertifikanın (`vault-0`'dan okunur)
-bitiş tarihini `openssl x509 -enddate` ile kontrol edip 30 günden AZ
-kaldığında AÇIKÇA UYARIR. Bu OTOMATİK bir alarm DEĞİLDİR — yalnızca
-komut ÇALIŞTIRILDIĞINDA raporlar — ama operatör ŞUNU PERİYODİK olarak
-(ör. haftalık bir CI cron job'unda, `VAULT_TOKEN` GEREKTİRMEDEN)
-çalıştırabilir:
+Yenileme operatör kontrollüdür; root token tutan otomatik bir CronJob kurulmaz.
+Sertifika yenileme komutu standby’ları önce, lideri en son yeniden başlatır.
+Kontroller loopback bağlantısında `VAULT_TLS_SERVER_NAME` ile sertifikadaki
+ismi doğrular. CA kalıcı ConfigMap mount’undan okunur; yeni Raft üyeleri de
+`leader_ca_cert_file` ile aynı CA’ya güvenir.
 
 ```bash
 ./platform/bootstrap/03-pki.sh --verify-only --only vault-tls
-# çıktıda: "Vault sunucu sertifikası N gün geçerli (bitiş: ...)"
-# VEYA: "N GÜN İÇİNDE DOLUYOR" uyarısı (N < 30 ise)
 ```
-
-Ayrıca AYNI kontrol artık pod-yenileme sırasında (`_restart_vault_pod()`)
-`VAULT_SKIP_VERIFY=true` YERİNE `VAULT_CACERT` ile GERÇEK bir CA
-doğrulamalı bağlantı kullanıyor — yalnızca "TLS handshake başladı mı"
-DEĞİL, normal bir istemcinin (ESO/cert-manager) YAPACAĞI gibi
-hostname/SAN VE zincir doğrulamasını da CANLI test ediyor.
 
 **DÜZELTME (Faz 12l, code review #1):** `enable_vault_tls()` artık pod'ları
 GERÇEKTEN sırayla (standby önce, active en son) SİLİP yeniden oluşturuyor

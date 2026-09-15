@@ -34,6 +34,7 @@ spec:
               type: object
               required:
                 - teamName
+                - oidcGroup
                 - costCenter
                 - environment
                 - networkTier

@@ -1,7 +1,7 @@
 # `protect-prod-tenant-deletion` — gerçek doğrulama kaydı
 
 Bu politika `kyverno test` ile (statik `kyverno-test.yaml` + `variables.yaml`
-fixture'ı) DOĞRULANAMADI: bu repodaki Kyverno CLI sürümünün (1.19.1) `test`
+fixture'ı) DOĞRULadıANAMADI: bu repodaki Kyverno CLI sürümünün (1.19.1) `test`
 komutu, `request.operation=DELETE` + `request.oldObject` simülasyonu için
 kullanılan values-dosyası şemasını "deprecated, 1.15'te kaldırılacak" olarak
 reddediyor ve güncel şemanın bu iki alanı nasıl karşıladığı bu ortamda

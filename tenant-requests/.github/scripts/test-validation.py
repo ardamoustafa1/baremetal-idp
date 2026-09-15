@@ -6,9 +6,10 @@ import yaml
 root=Path(__file__).resolve().parents[2]
 platform=Path(os.environ.get('PLATFORM_REPO_DIR',str(root.parent)))
 base=yaml.safe_load((root/'tenants/acme-dev.yaml').read_text())
-cases=[('valid',{},True),('invalid-tier',{'quotaTier':'gigantic'},False),('invalid-prod',{'environment':'prod'},False),('unknown-field',{'typo':True},False)]
+cases=[('valid',{},True),('missing-oidc-group',{},False),('invalid-tier',{'quotaTier':'gigantic'},False),('invalid-prod',{'environment':'prod'},False),('unknown-field',{'typo':True},False)]
 for name,patch,expected in cases:
  doc={**base,'spec':{**base['spec'],**patch}}
+ if name=='missing-oidc-group': doc['spec'].pop('oidcGroup',None)
  with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml',prefix='regression-',dir=root/'tenants',delete=False) as f:
   yaml.safe_dump(doc,f);path=Path(f.name)
  try:

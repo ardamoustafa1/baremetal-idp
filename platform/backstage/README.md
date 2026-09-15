@@ -4,7 +4,7 @@ Uygulama artık bu repodadır: `portal/` Backstage 1.54.0 kaynaklarını ve Yarn
 
 ## Akış
 
-Form → gerçek `fetch:template` action → `publish:github:pull-request` → tenant-requests CI → main'e merge → git-files ApplicationSet → Crossplane → Ready Claim → katalog.
+Form → sunucuda tenant yetki kontrolü → gerçek `fetch:template` action → `publish:github:pull-request` → tenant-requests CI → main'e merge → git-files ApplicationSet → Crossplane → Ready Claim → katalog.
 
 - Yeni dosyalar: `clusters/platform/tenants/<team>-<environment>.yaml` ve `clusters/platform/postgresql/<name>.yaml`. Eski `tenants/*.yaml` / `postgresql/*.yaml` yolları da desteklenir.
 - `platform` yolu ArgoCD `in-cluster` hedefine gider. Diğer cluster adları ArgoCD'ye kaydedilmeli, tenant AppProject destinations'a, form enum'una ve CI `ALLOWED_CLUSTERS` listesine eklenmelidir. Her hedefte Crossplane/XRD/composition ve `tenant-requests` namespace'i önceden kurulmalıdır. Mevcut portal okuyucusu bulunduğu platform cluster'ını gösterir; uzak cluster gözlemi ayrıca okuyucu/kimlik yapılandırması gerektirir.
@@ -46,7 +46,7 @@ Backend OIDC modülü, gerçek Keycloak giriş ekranı ve `emailMatchingUserEnti
 
 ## Kubernetes ve Crossplane
 
-Resmî Kubernetes plugin'i namespace/pod/workload görünürlüğünü sağlar. `platform-crossplane` yerel backend plugin'i Claim'i ve `spec.resourceRef` ile bağlı Composite'i okur; `Crossplane` sekmesi Ready/Synced/reason/message durumunu 15 saniyede yeniler. Secret içerikleri/exec yetkisi verilmez. Projected ServiceAccount token'ı her API isteğinde yeniden okunur. Portalın giriş yapabilen kullanıcıları bu salt okunur platform görünümünü paylaşır; tenant başına görünürlük izolasyonu uygulanmış değildir.
+Resmî Kubernetes plugin'i namespace/pod/workload görünürlüğünü sağlar. `platform-crossplane` yerel backend plugin'i Claim'i ve `spec.resourceRef` ile bağlı Composite'i okur; `Crossplane` sekmesi Ready/Synced/reason/message durumunu 15 saniyede yeniler. Secret içerikleri/exec yetkisi verilmez. Projected ServiceAccount token'ı her API isteğinde yeniden okunur. Katalog okuma tenant sahipliğiyle sınırlandırılır. Kubernetes sorguları katalogdaki sunucu tarafından belirlenmiş namespace’i kullanır; ham Kubernetes proxy erişimi tenant kullanıcılarına kapalıdır.
 
 ## Otomatik catalog-info
 
@@ -78,50 +78,30 @@ Scaffolder testi **gerçek iki Backstage action'ını** çalıştırır; GitHub 
 
 Canlı kabul: Keycloak ile oturum açın; iki formdan PR oluşturun; Actions check + PR yorumunu görün; geçersiz tier/HA-small değişikliğinin kırmızı olduğunu görün; geçerli PR'ı merge edin; Argo Application Synced, Claim Ready ve katalog/Kubernetes/Crossplane sekmelerini doğrulayın.
 
-## Canlıya geçmeden önce ZORUNLU — çok kullanıcılı yetkilendirme testi (code review #12)
+## Yetkilendirme ve canlı kabul
 
-**Bu bölüm KASITLI OLARAK bir kontrol listesidir, bir uygulama DEĞİLDİR** —
-gerçek Keycloak kullanıcıları + gerçek bir Backstage dağıtımı GEREKTİRİR,
-bu görevin sandbox'ında YAPILAMAZ. Backend hâlâ `@backstage/plugin-
-permission-backend-module-allow-all-policy` kullanıyor (bkz.
-`portal/packages/backend/src/index.ts`, `PLATFORM_CONTEXT.md` teknik borç
-#40) — yani BU KONTROL LİSTESİ ŞU AN ÇALIŞTIRILSA, "tenant sahibi" ile
-"başka tenant kullanıcısı" arasında HİÇBİR FARK GÖZLEMLENMEZ (ikisi de
-HER ŞEYİ yapabilir) — asıl amacı, gerçek bir sahiplik-bazlı
-`PermissionPolicy` (#40) VE Keycloak→catalog grup senkronizasyonu (#41)
-YAZILDIKTAN SONRA bu ikisinin GERÇEKTEN çalıştığını KANITLAMAKTIR. Bu
-kontrol listesi olmadan #40/#41 "tamamlandı" sayılmamalıdır — yazılı bir
-permission policy'nin KENDİSİ, doğru davrandığının KANITI DEĞİLDİR.
+- Giriş, doğrulanmış OIDC `userinfo.sub` ve `groups` alanlarından kimlik üretir.
+  E-posta veya statik katalog üyeliği erişim vermez. Keycloak `groups` mapper’ı
+  UserInfo çıktısında etkin olmalıdır; eksik grup bilgisi girişi reddeder.
+- `platform-admins` → `group:default/platform-team`; her Tenant’ın `oidcGroup`
+  üyeliği → o Tenant’ın `team-<teamName>` sahiplik grubu. Tenant Group kayıtları
+  katalog sağlayıcısı tarafından oluşturulur; elle grup eklemek gerekmez.
+- Tenant oluşturma yöneticilere ayrılmıştır. PostgreSQL talebinde hedef Tenant
+  sunucuda bulunur ve sahiplik PR hazırlanmadan önce kontrol edilir.
+- Kullanıcılar yalnızca kendi katalog kaynaklarını ve scaffolder görevlerini
+  okuyabilir. Katalog yazma, şablon editörü ve ham Kubernetes proxy yetkileri
+  yöneticilere ayrılmıştır. Yeni izinler varsayılan olarak reddedilir.
+- Backstage kimlik token süresi 10 dakikadır. Grup kaldırma, mevcut token’ın
+  süresi boyunca gecikebilir; OIDC yenilemesinde üyelik tekrar hesaplanır.
+  Anında iptal gerektiğinde Keycloak oturumu da sonlandırılmalıdır; mevcut
+  Backstage token’ının kalan ömrü ayrıca hesaba katılmalıdır.
 
-Dört ayrı kullanıcı kimliğiyle (gerçek Keycloak hesapları) TEKRARLANMALI:
-**(a)** bir tenant'ın SAHİP grubundaki kullanıcı, **(b)** BAŞKA bir
-tenant'ın kullanıcısı, **(c)** `platform-admins` grubundaki bir kullanıcı,
-**(d)** Keycloak'ta grup üyeliği SONRADAN KALDIRILAN bir kullanıcı (aynı
-oturum/token hâlâ AKTİFKEN VE token YENİLENDİKTEN SONRA — ikisi AYRI
-senaryolardır). Her kimlik için AŞAĞIDAKİ altı akış test edilmeli:
+Canlı kabulde tenant sahibi, başka tenant kullanıcısı, platform yöneticisi ve
+üyeliği kaldırılmış kullanıcıyla giriş, katalog okuma, doğrudan API sorgusu,
+PostgreSQL talebi ve görev geçmişi denenmelidir. Yetkisiz işlemlerde 403/ret,
+yetkili işlemlerde doğru tenant sonucu beklenir. Grup kaldırma hem mevcut
+oturumda hem 10 dakika sonrasında ve yeniden girişte denenmelidir.
 
-1. **Giriş** — OIDC login başarılı, doğru kullanıcı/grup bilgisiyle profil oluşur.
-2. **Katalog görüntüleme** — kullanıcı YALNIZCA kendi eriştiği kaynakları mı
-   görüyor, yoksa TÜM tenant'ların catalog entity'lerini mi (#40 kapanmadan
-   İKİNCİSİ BEKLENİR — bu BİLİNEN, KABUL EDİLMİŞ bir açıktır, HATA RAPORU
-   DEĞİL).
-3. **Şablon çalıştırma** (scaffolder) — (b) BAŞKA tenant kullanıcısı
-   KENDİ tenant'ı ADINA bir template TETİKLEYEBİLİYOR MU? (#40 kapanmadan
-   EVET BEKLENİR — kapandıktan SONRA HAYIR olmalı.)
-4. **PR oluşturma** — template'in ürettiği PR'ın hedef repo/branch'i
-   doğru mu, `tenant-requests` reposunun CODEOWNERS/branch-protection'ı
-   (bu repo kapsamı DIŞI, GitHub ayarı) GERÇEKTEN devrede mi?
-5. **Kubernetes kaynaklarını görüntüleme** — kullanıcı YALNIZCA kendi
-   tenant namespace'inin kaynaklarını mı görüyor (Backstage'in Kubernetes
-   plugin'i RBAC-farkında mı, yoksa portal'ın KENDİ ServiceAccount'ının
-   geniş görünürlüğü mü sunuluyor — bu da AYRI, kontrol edilmesi gereken
-   bir soru).
-6. **Yetki kaldırıldıktan SONRA erişimin KESİLMESİ** — (d) kullanıcısının
-   Keycloak grubu kaldırıldıktan SONRA: (i) MEVCUT oturum/token hâlâ
-   erişebiliyor mu (JWT süresi dolana kadar BEKLENEN bir gecikme mi,
-   yoksa GÜVENLİK AÇIĞI mı — bu, token TTL'sine göre değerlendirilmeli),
-   (ii) token YENİLENDİKTEN/yeniden login OLUNDUKTAN sonra erişim
-   GERÇEKTEN kesiliyor mu.
-
-Bu altı akışın TAMAMI dört kimlik İÇİN geçmeden (yalnızca #40/#41
-"yazıldı" olması YETERLİ DEĞİL) portal ÜRETİME hazır SAYILMAMALIDIR.
+Yerel testler: `yarn workspace backend test --watch=false --runInBand`.
+Gerçek Keycloak/GitHub/Kubernetes kabulü bu testlerden ayrı yürütülür.
+Ayrıntılı geçiş sırası: `platform/docs/runbooks/production-readiness.md`.

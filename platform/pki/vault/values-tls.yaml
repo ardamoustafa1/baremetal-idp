@@ -32,11 +32,17 @@ global:
 
 server:
   volumes:
+    - name: vault-ca
+      configMap:
+        name: vault-ca-bundle
     - name: vault-server-tls
       secret:
         secretName: vault-server-tls
 
   volumeMounts:
+    - name: vault-ca
+      mountPath: /vault/userconfig/vault-ca
+      readOnly: true
     - name: vault-server-tls
       mountPath: /vault/userconfig/vault-server-tls
       readOnly: true
@@ -63,12 +69,15 @@ server:
           path = "/vault/data"
 
           retry_join {
+            leader_ca_cert_file = "/vault/userconfig/vault-ca/ca.crt"
             leader_api_addr = "https://vault-0.vault-internal:8200"
           }
           retry_join {
+            leader_ca_cert_file = "/vault/userconfig/vault-ca/ca.crt"
             leader_api_addr = "https://vault-1.vault-internal:8200"
           }
           retry_join {
+            leader_ca_cert_file = "/vault/userconfig/vault-ca/ca.crt"
             leader_api_addr = "https://vault-2.vault-internal:8200"
           }
         }

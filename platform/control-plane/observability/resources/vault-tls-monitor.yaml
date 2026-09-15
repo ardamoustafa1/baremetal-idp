@@ -1,0 +1,127 @@
+# Probe the served certificate with the platform CA, without Vault credentials.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-tls-probe
+  namespace: vault
+data:
+  blackbox.yml: |
+    modules:
+      vault_tls:
+        prober: http
+        timeout: 10s
+        http:
+          valid_status_codes: [200, 429, 473]
+          fail_if_not_ssl: true
+          preferred_ip_protocol: ip4
+          tls_config:
+            ca_file: /etc/vault-ca/ca.crt
+            insecure_skip_verify: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-tls-probe
+  namespace: vault
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: vault-tls-probe}
+  template:
+    metadata:
+      labels: {app: vault-tls-probe}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: blackbox
+          image: prom/blackbox-exporter:v0.25.0
+          args: [--config.file=/etc/blackbox/blackbox.yml]
+          ports: [{name: http, containerPort: 9115}]
+          resources:
+            requests: {cpu: 20m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            httpGet: {path: /-/healthy, port: http}
+          livenessProbe:
+            httpGet: {path: /-/healthy, port: http}
+          volumeMounts:
+            - {name: config, mountPath: /etc/blackbox, readOnly: true}
+            - {name: ca, mountPath: /etc/vault-ca, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: vault-tls-probe}
+        - name: ca
+          configMap: {name: vault-ca-bundle}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-tls-probe
+  namespace: vault
+  labels: {app: vault-tls-probe}
+spec:
+  selector: {app: vault-tls-probe}
+  ports: [{name: http, port: 9115, targetPort: http}]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vault-tls-probe
+  namespace: vault
+  labels: {release: kube-prometheus-stack}
+spec:
+  selector:
+    matchLabels: {app: vault-tls-probe}
+  endpoints:
+    - port: http
+      path: /probe
+      interval: 60s
+      scrapeTimeout: 15s
+      params:
+        module: [vault_tls]
+        target: [https://vault-active.vault.svc.cluster.local:8200/v1/sys/health]
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vault-tls
+  namespace: vault
+  labels: {release: kube-prometheus-stack}
+spec:
+  groups:
+    - name: vault-tls
+      rules:
+        - alert: VaultCertificateExpiring
+          expr: probe_ssl_earliest_cert_expiry{service="vault-tls-probe"} - time() < 30 * 86400
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: Vault TLS certificate expires within 30 days
+            description: Run the documented 03-pki.sh --only vault-tls renewal, then verify all Raft peers.
+        - alert: VaultCertificateExpiryCritical
+          expr: probe_ssl_earliest_cert_expiry{service="vault-tls-probe"} - time() < 7 * 86400
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: Vault TLS certificate expires within 7 days
+        - alert: VaultTLSProbeFailed
+          expr: probe_success{service="vault-tls-probe"} == 0
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: Vault HTTPS health or certificate verification failed
+        - alert: VaultTLSMonitorMissing
+          expr: absent(probe_success{service="vault-tls-probe"}) or up{service="vault-tls-probe"} == 0
+          for: 10m
+          labels: {severity: critical}
+          annotations:
+            summary: Vault certificate monitoring is unavailable

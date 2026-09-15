@@ -931,9 +931,8 @@ enable_vault_tls() {
     # doğrulamalı bir bağlantı kullanılıyor artık (bkz. aşağıdaki CA
     # bundle kopyalama adımı) — hostname (SAN eşleşmesi) VE zincir GERÇEKTEN
     # doğrulanıyor.
-    kubectl -n vault cp "${work}/vault-ca-chain.pem" "${p}:/tmp/vault-ca-chain.pem"
     wait_for "${p} unsealed (HTTPS, GERÇEK CA doğrulamalı — VAULT_SKIP_VERIFY DEĞİL)" 180 10 \
-      bash -c "kubectl -n vault exec ${p} -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/tmp/vault-ca-chain.pem vault status -format=json' 2>/dev/null | jq -e '.sealed == false' >/dev/null"
+      bash -c "kubectl -n vault exec ${p} -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_TLS_SERVER_NAME=vault-active.vault.svc.cluster.local VAULT_CACERT=/vault/userconfig/vault-ca/ca.crt vault status -format=json' 2>/dev/null | jq -e '.sealed == false' >/dev/null"
     # Mounted sertifikanın GERÇEKTEN yeni sertifika olduğunu doğrula —
     # yalnızca pod'un "Running" olması, HANGİ sertifikayı sunduğunu
     # KANITLAMAZ (ör. eski bir crash-loop pod'u yeniden başlamış olabilir).
@@ -979,36 +978,18 @@ enable_vault_tls() {
 verify_vault_tls() {
   log "DOĞRULAMA: Vault listener TLS"
 
-  # DÜZELTME (code review #10, YÜKSEK): bu doğrulama ÖNCEDEN yalnızca
-  # `VAULT_SKIP_VERIFY=true` ile "TLS handshake başladı mı" kontrol
-  # ediyordu — normal bir istemcinin (ESO/cert-manager) YAPACAĞI GERÇEK
-  # CA doğrulamasının YERİNE GEÇMEZ (self-signed/yanlış SAN'lı bir
-  # sertifika bile bu kontrolü GEÇERDİ). `verify_vault_tls()` `enable_
-  # vault_tls()`'DEN BAĞIMSIZ da çağrılabildiği için (bkz. `--verify-only`)
-  # CA bundle'ı KENDİSİ, DİSKTEKİ (bir önceki `enable_vault_tls()`
-  # koşusundan kalan) `trust-bundles/vault-ca-chain.pem`'den kopyalıyor.
-  local ca_bundle="${PKI_DIR}/trust-bundles/vault-ca-chain.pem"
-  [[ -f "${ca_bundle}" ]] || die "CA bundle bulunamadı (${ca_bundle}) — önce enable_vault_tls() çalıştırılmalı (03-pki.sh --only vault-tls)."
-
+  # CA is mounted from vault/vault-ca-bundle. Verification does not depend
+  # on operator-local files or kubectl cp. Keep CA and hostname checks enabled.
   local i pod
   for i in 0 1 2; do
     pod="vault-${i}"
-    kubectl -n vault cp "${ca_bundle}" "${pod}:/tmp/vault-ca-chain.pem"
     wait_for "${pod} unsealed (HTTPS, GERÇEK CA doğrulamalı)" 180 10 \
-      bash -c "kubectl -n vault exec ${pod} -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_CACERT=/tmp/vault-ca-chain.pem vault status -format=json' 2>/dev/null | jq -e '.sealed == false' >/dev/null"
+      bash -c "kubectl -n vault exec ${pod} -- sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_TLS_SERVER_NAME=vault-active.vault.svc.cluster.local VAULT_CACERT=/vault/userconfig/vault-ca/ca.crt vault status -format=json' 2>/dev/null | jq -e '.sealed == false' >/dev/null"
   done
   ok "Vault listener TLS etkin (HTTPS, GERÇEK CA doğrulamalı bağlantı, pki-int-dev/roles/vault-server'dan imzalı)"
 
-  # --- Sertifika süresi kontrolü (code review #10) --------------------------
-  # `rclone`/Kyverno imza kontrolünde OLDUĞU gibi: bir sertifikanın VAR
-  # olması onun GEÇERLİ/YAKIN-ZAMANDA-DOLMAYACAK olduğunu KANITLAMAZ. Sunulan
-  # sertifikanın (vault-0'dan okunur — TÜM pod'lar AYNI Secret'ı mount eder)
-  # BİTİŞ tarihi openssl ile (operatörün KENDİ makinesinde, pod İÇİNDE DEĞİL
-  # — vault image'ının openssl CLI'sı İÇERİP İÇERMEDİĞİ garanti DEĞİL)
-  # kontrol edilir; 30 günden AZ kaldıysa AÇIKÇA UYARILIR (bu script HÂLÂ
-  # bir CronJob/Alertmanager kuralına BAĞLANMADI — bkz. pki/vault/README.md
-  # "Sertifika yenileme" — bu KONTROL KOMUTUNUN KENDİSİ periyodik olarak,
-  # ör. bir CI cron job'unda, ELLE çalıştırılmalıdır).
+  # Local diagnostic complements the continuous blackbox TLS monitor installed
+  # by 05-observability.sh. Renewal remains an operator-controlled operation.
   local served_cert; served_cert="$(kubectl -n vault exec vault-0 -- cat /vault/userconfig/vault-server-tls/tls.crt 2>/dev/null)"
   if [[ -n "${served_cert}" ]] && command -v openssl >/dev/null 2>&1; then
     local end_date end_epoch now_epoch days_left

@@ -27,6 +27,20 @@ prometheus:
     # namespace sınırı olmadan seçer — release etiketi zaten platform-genel
     # bir kimlik doğrulama sınırı olarak yeterli (Kyverno guardrail'leri
     # bunun ötesini denetler).
+    #
+    # DÜZELTME (bu turda, taze bir denetimde bulundu — KRİTİK): yukarıdaki
+    # "namespace sınırı olmadan seçer" iddiası YANLIŞTI. Prometheus Operator'ın
+    # GERÇEK semantiğinde `*Selector` (etiket filtresi) ile `*NamespaceSelector`
+    # (namespace filtresi) İKİ BAĞIMSIZ kapıdır — yalnızca `*Selector: {}`
+    # ayarlamak, `*NamespaceSelector` HİÇ BELİRTİLMEDİĞİ (nil) sürece Operator'ı
+    # yalnızca Prometheus'un KENDİ namespace'i (`observability`) İÇİNDEKİ
+    # ServiceMonitor/PodMonitor/PrometheusRule'ları taramaya DEVAM ETTİRİR.
+    # Sonuç: `cert-manager` namespace'indeki `certmanager-expiry-rules.yaml`
+    # (sertifika süre-dolum alarmı), `opencost` namespace'indeki OpenCost
+    # ServiceMonitor'ı, VE `vault` namespace'indeki `vault-tls-monitor.yaml`
+    # (Vault sertifika süre-dolum alarmı) HİÇBİRİ Prometheus tarafından ASLA
+    # YÜKLENMİYORDU — kurulum script'leri "başarılı" raporlasa bile bu
+    # alarmların/metriklerin HİÇBİRİ GERÇEKTE ÇALIŞMIYORDU.
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
     ruleSelectorNilUsesHelmValues: false
@@ -35,6 +49,12 @@ prometheus:
     serviceMonitorSelector: {}
     podMonitorSelector: {}
     ruleSelector: {}
+    # YUKARIDAKİ etiket filtrelerinin GERÇEKTEN tüm namespace'lere
+    # uygulanabilmesi İÇİN GEREKLİ — bu üç alan OLMADAN yukarıdaki `{}`
+    # etiket filtreleri yalnızca `observability` namespace'i İÇİNDE anlamlıdır.
+    serviceMonitorNamespaceSelector: {}
+    podMonitorNamespaceSelector: {}
+    ruleNamespaceSelector: {}
     # Uzak yazma YOK (Faz 9'da Thanos/uzun-vade depolama kapsam dışı).
     additionalScrapeConfigs: []
 

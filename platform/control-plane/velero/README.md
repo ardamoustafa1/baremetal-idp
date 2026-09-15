@@ -129,3 +129,24 @@ uç nokta yazmamak içindir, "gerekli değil" anlamına GELMEZ.
   (öncesinde: asla, elle re-run olmadan) — ama HÂLÂ "yedeksiz kalan bir
   prod veritabanı için ALARM" ÜRETİLMİYOR (yalnızca reconciliation var,
   gözlemlenebilirlik/alerting entegrasyonu YOK — bu ayrı bir iş).
+
+## Dosya sistemi yedeklemesi ve kapsama kontrolü
+
+Node-agent artık etkindir (chart 7.2.1 / Velero 1.14.1 / AWS plugin 1.10.1).
+Dosya yedeği açık katılımla çalışır: Deployment/StatefulSet pod şablonunda
+`backup.velero.io/backup-volumes: data` annotation’ı kullanılır; `data`, PVC
+adı değil `spec.volumes[].name` değeridir. Birden çok volume virgülle ayrılır.
+Günlük yerel ve offsite planları bu annotation’ları kullanır; snapshot kapalıdır.
+Canlı veritabanı dosyalarını tutarlı yedek saymayın. CNPG için Barman/PITR,
+Vault için Raft snapshot ve gerekli recovery anahtarları ayrıca korunmalıdır.
+
+İlk FSB kurulumu öncesi `VELERO_REPOSITORY_PASSWORD_FILE` ile güçlü parolayı
+bir dosyadan sağlayın ve bağımsız güvenli konumda saklayın. Script mevcut
+`velero-repo-credentials` Secret’ını değiştirmez. Mevcut repo parolasını
+kaybetmek veya değiştirmek eski Kopia yedeklerini erişilemez yapabilir.
+
+`platform/tests/readiness/check-live.py --context <test-context>` her Bound
+PVC için yakın tarihli tamamlanmış FSB veya CNPG yedeği arar. Annotation’ın
+varlığı başarı sayılmaz. Native yedeği olan Vault gibi kaynaklar otomatik
+FSB/CNPG kontrolünde açık kalır; uygulamaya özgü kurtarma kanıtı ayrıca
+incelenmeden genel hazır kararı verilmez.

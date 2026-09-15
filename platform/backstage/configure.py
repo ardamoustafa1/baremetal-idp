@@ -13,7 +13,7 @@ env={k:os.environ[k] for k in ['PLATFORM_BASE_DOMAIN','KEYCLOAK_HOSTNAME']};env[
 p=root/'app/values.yaml';d=yaml.safe_load(p.read_text());d['backstage']['image'].update(registry=os.environ['BACKSTAGE_IMAGE_REGISTRY'],tag=os.environ['BACKSTAGE_IMAGE_TAG']);p.write_text(yaml.safe_dump(d,sort_keys=False))
 repo=os.environ['TENANT_REQUESTS_REPO_URL'].removesuffix('.git').removeprefix('https://github.com/');owner,name=repo.split('/')
 for p in (root/'templates').glob('*/template.yaml'):
- d=yaml.safe_load(p.read_text());d['spec']['steps'][1]['input']['repoUrl']=f'github.com?owner={owner}&repo={name}'
+ d=yaml.safe_load(p.read_text());next(step for step in d['spec']['steps'] if step['id']=='publish')['input']['repoUrl']=f'github.com?owner={owner}&repo={name}'
  params=d['spec']['parameters'][0];params['required']=[s for s in params['required'] if s!='repoUrl'];params['properties'].pop('repoUrl',None)
  p.write_text(yaml.safe_dump(d,sort_keys=False,allow_unicode=True))
 # Email matching is explicit and fails closed for users absent from the catalog.

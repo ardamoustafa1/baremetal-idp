@@ -243,6 +243,7 @@ apply_secrets() {
   ok "Alertmanager routing Secret'ı uygulandı (tip: ${ALERTMANAGER_WEBHOOK_TYPE:-slack})"
 
   kubectl apply -f "${OBS_DIR}/resources/certmanager-expiry-rules.yaml"
+  kubectl apply -f "${OBS_DIR}/resources/vault-tls-monitor.yaml"
   ok "cert-manager expiry PrometheusRule uygulandı"
 }
 

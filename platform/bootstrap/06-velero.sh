@@ -186,6 +186,17 @@ install_velero() {
     return 0
   fi
 
+  # A repository password must be recoverable independently of this cluster.
+  # Never rotate an existing password: that would make old Kopia backups unreadable.
+  local repository_secret
+  repository_secret="$(kubectl -n velero get secret velero-repo-credentials --ignore-not-found -o name)"
+  if [[ -z "${repository_secret}" ]]; then
+    [[ -n "${VELERO_REPOSITORY_PASSWORD_FILE:-}" && -s "${VELERO_REPOSITORY_PASSWORD_FILE}" ]] \
+      || die "İlk dosya yedeğinden önce VELERO_REPOSITORY_PASSWORD_FILE belirtin; dosyayı küme dışında güvenli saklayın."
+    kubectl -n velero create secret generic velero-repo-credentials \
+      --from-file="repository-password=${VELERO_REPOSITORY_PASSWORD_FILE}" >/dev/null
+  fi
+
   mkdir -p "${VELERO_DIR}/rendered"
   envsubst '${CEPH_OBJECTSTORE_NAME}' \
     < "${VELERO_DIR}/values.yaml.tpl" \
@@ -207,6 +218,8 @@ install_velero() {
   wait_for "Velero deployment" 300 10 \
     kubectl -n velero rollout status deployment/velero --timeout=5s
 
+  wait_for "Velero node-agent" 300 10 \
+    kubectl -n velero rollout status daemonset/node-agent --timeout=5s
   verify_velero
 }
 

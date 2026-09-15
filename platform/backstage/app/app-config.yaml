@@ -23,6 +23,7 @@ backend:
       password: ${BACKSTAGE_DB_PASSWORD}
       database: backstage
 auth:
+  backstageTokenExpiration: { minutes: 10 }
   environment: production
   providers:
     oidc:
@@ -31,9 +32,6 @@ auth:
         clientId: backstage
         clientSecret: ${BACKSTAGE_OIDC_CLIENT_SECRET}
         prompt: auto
-        signIn:
-          resolvers:
-          - resolver: emailMatchingUserEntityProfileEmail
   session:
     secret: ${AUTH_SESSION_SECRET}
 catalog:
@@ -100,4 +98,7 @@ scaffolder:
     name: platform-scaffolder-bot
     email: platform-bot@example.internal
 platformCatalog:
+  enabled: true
+
+permission:
   enabled: true
