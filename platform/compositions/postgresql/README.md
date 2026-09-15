@@ -202,18 +202,28 @@ değiştikten) ÖNCE:
 bash tests/verify-harbor-image-config.sh
 
 # 2. CANLI kontrol — her PostgreSQL sürümü (_pgImageTags) imajı GERÇEKTEN
-#    Harbor'da mevcut mu, (COSIGN_PUBLIC_KEY verildiyse) imzalı mı?
-#    GERÇEK bir Harbor'a ağ erişimi GEREKİR — CI'da ÇALIŞTIRILMAZ (bu
-#    repo'nun sandbox'ında gerçek bir Harbor/cosign yok, bkz.
-#    PLATFORM_CONTEXT.md). Provizyondan HEMEN önce operatör tarafından
-#    elle çalıştırılmalı.
+#    Harbor'da mevcut mu, imzalı mı? GERÇEK bir Harbor'a ağ erişimi
+#    GEREKİR — CI'da ÇALIŞTIRILMAZ (bu repo'nun sandbox'ında gerçek bir
+#    Harbor/cosign yok, bkz. PLATFORM_CONTEXT.md). Provizyondan HEMEN
+#    önce operatör tarafından elle çalıştırılmalı.
+#
+#    DÜZELTME (code review #11, YÜKSEK): `COSIGN_PUBLIC_KEY`/`cosign`
+#    eksikse imza kontrolü ÖNCEDEN SESSİZCE ATLANIP script "başarılı"
+#    çıkabiliyordu — bu ön kontrol geçse BİLE `require-signed-images`
+#    Kyverno politikası GERÇEK deployment'ı REDDEDEBİLİRDİ. ÜRETİM
+#    öncesi HER ZAMAN `--require-signature` İLE çalıştırın — bu bayrak
+#    OLMADAN (veya anahtar/cosign eksikse) script artık `⚠️` ile AÇIKÇA
+#    "imza kontrolü ATLANDI" der, ASLA sessiz bir "✅" İLE karışmaz.
 export HARBOR_HOSTNAME=harbor.<gerçek-domain>
-export COSIGN_PUBLIC_KEY=/path/to/cosign.pub   # isteğe bağlı, imza da doğrulanır
-bash tests/verify-harbor-image-exists.sh
+export COSIGN_PUBLIC_KEY=/path/to/cosign.pub
+bash tests/verify-harbor-image-exists.sh --require-signature
 ```
 
 İkisi de FAIL (exit≠0) verirse, `01-require-signed-images.yaml.tpl`'in
 `deny-non-harbor-images` kuralı ilk gerçek `XPostgreSQLInstance` claim'inde
 Postgres Cluster pod'unu SESSİZCE `ImagePullBackOff`/politika reddiyle
 başarısız kılar — bu iki script bunu provizyon ÖNCESİNDE, görünür şekilde
-yakalamak içindir.
+yakalamak içindir. İkinci script'i `--require-signature` OLMADAN
+çalıştırmak yalnızca "imaj var mı" sorusuna cevap verir — imza kontrolü
+mutlaka `--require-signature` İLE, ÜRETİME geçmeden HEMEN önce
+tekrarlanmalıdır.

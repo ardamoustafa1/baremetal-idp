@@ -104,13 +104,35 @@ export VAULT_TOKEN="<root veya yeterli yetkili bir token>"
 ./platform/bootstrap/03-pki.sh --only vault-tls
 ```
 
-**Alarm/uyarı KURULMADI** (bu görevde yapılmadı) — üretimde bu 90 günlük
-pencereyi izleyen bir Prometheus alert'i (sertifikanın `notAfter`
-tarihine göre) EKLENMELİDİR; `cert-manager` zaten kendi imzaladığı
-sertifikalar için böyle bir alert'e sahip (bkz. `control-plane/
-observability/resources/certmanager-expiry-rules.yaml`) — bu, Vault'un
-KENDİ sertifikası için AYNI desenin BENZERİ, ayrı bir iş olarak kalır
-(Vault'un sertifikası cert-manager'ın İZLEMEDİĞİ bir yoldan geliyor).
+**Alarm/uyarı henüz bir Prometheus/Alertmanager kuralına BAĞLI DEĞİL**
+(bu turda yapılmadı) — üretimde bu 90 günlük pencereyi izleyen bir
+PrometheusRule (sertifikanın `notAfter` tarihine göre) EKLENMELİDİR;
+`cert-manager` zaten kendi imzaladığı sertifikalar için böyle bir alert'e
+sahip (bkz. `control-plane/observability/resources/certmanager-expiry-
+rules.yaml`) — bu, Vault'un KENDİ sertifikası için AYNI desenin BENZERİ,
+ayrı bir iş olarak kalır (Vault'un sertifikası cert-manager'ın
+İZLEMEDİĞİ bir yoldan geliyor, bir metrik olarak DIŞARI AÇILMIYOR).
+
+**DÜZELTME (code review #10, YÜKSEK) — interim, ÇALIŞIR bir kontrol
+komutu eklendi:** tam bir Prometheus entegrasyonu OLMASA da,
+`verify_vault_tls()` artık SUNULAN sertifikanın (`vault-0`'dan okunur)
+bitiş tarihini `openssl x509 -enddate` ile kontrol edip 30 günden AZ
+kaldığında AÇIKÇA UYARIR. Bu OTOMATİK bir alarm DEĞİLDİR — yalnızca
+komut ÇALIŞTIRILDIĞINDA raporlar — ama operatör ŞUNU PERİYODİK olarak
+(ör. haftalık bir CI cron job'unda, `VAULT_TOKEN` GEREKTİRMEDEN)
+çalıştırabilir:
+
+```bash
+./platform/bootstrap/03-pki.sh --verify-only --only vault-tls
+# çıktıda: "Vault sunucu sertifikası N gün geçerli (bitiş: ...)"
+# VEYA: "N GÜN İÇİNDE DOLUYOR" uyarısı (N < 30 ise)
+```
+
+Ayrıca AYNI kontrol artık pod-yenileme sırasında (`_restart_vault_pod()`)
+`VAULT_SKIP_VERIFY=true` YERİNE `VAULT_CACERT` ile GERÇEK bir CA
+doğrulamalı bağlantı kullanıyor — yalnızca "TLS handshake başladı mı"
+DEĞİL, normal bir istemcinin (ESO/cert-manager) YAPACAĞI gibi
+hostname/SAN VE zincir doğrulamasını da CANLI test ediyor.
 
 **DÜZELTME (Faz 12l, code review #1):** `enable_vault_tls()` artık pod'ları
 GERÇEKTEN sırayla (standby önce, active en son) SİLİP yeniden oluşturuyor
