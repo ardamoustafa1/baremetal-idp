@@ -62,6 +62,26 @@
 # yapıldığını/GitHub'daki CODEOWNERS kuralının GERÇEKTEN uygulandığını BU
 # POLİTİKA DOĞRULAYAMAZ (bu, tenant-requests reposunun GitHub ayarlarına
 # aittir, bu depo/görev kapsamı DIŞINDADIR).
+#
+# DÜZELTME (code review #15, KRİTİK — Faz 12k/code review #11'in kendi
+# ÇÖZÜMÜNDE kalan bir açık): "only-admins-set-*" kuralları yalnızca
+# `request.operation Equals UPDATE` önkoşuluyla çalışıyordu — CREATE
+# HİÇ KAPSANMIYORDU. `restrict-tenant-claim-creation.yaml`, CLAIM
+# CREATE'ini yalnızca "yetkili istekçi mi" diye kontrol eder,
+# `spec.environment`'ın DEĞERİNİ veya annotation'ları KISITLAMAZ — yani
+# `tenant-claim-requester` rolüne sahip (admin OLMAYAN) HERHANGİ bir
+# kullanıcı, `spec.environment: prod` OLAN bir Tenant claim'ini,
+# `platform.internal/deletion-approved-by`/`-reason` annotation'larını
+# BAŞTAN, CREATE isteğinin İÇİNDE sahte bir değerle DOLU olarak
+# gönderebilirdi. `environment` immutable OLDUĞU için (bkz. tenant/xrd.yaml
+# CEL kuralı) bu sahte onay SONSUZA KADAR `oldObject`'te KALIR — gerçek bir
+# admin ASLA dokunmasa bile, ileride bir DELETE isteğinde
+# `require-deletion-approved-by-for-prod` kuralı bu SAHTE annotation'ı
+# "onaylanmış" sanıp geçit verirdi. YENİ 4 kural (Tenant/PostgreSQLInstance
+# × approved-by/approved-reason), CREATE'te BU İKİ annotation'dan HERHANGİ
+# BİRİ doluysa VE istekçi platform-admins/ArgoCD DEĞİLSE isteği REDDEDER —
+# "onay yalnızca SONRADAN, ayrı bir admin adımıyla eklenebilir" kısıtını
+# CREATE zamanına da GENİŞLETİR.
 # =============================================================================
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
@@ -310,6 +330,136 @@ spec:
           "platform.internal/deletion-approved-reason" annotation'ını
           yalnızca platform-admins grubundaki kullanıcılar (veya ArgoCD'nin
           GitOps akışı) ekleyebilir/değiştirebilir.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"
+
+    # --- DÜZELTME (code review #15): CREATE zamanında SAHTE onay
+    # annotation'ları eklenmesini engeller (yukarıdaki "HÂLÂ DIŞARIDA
+    # KALAN BOŞLUK" notuna bakın) — UPDATE kurallarıyla AYNI grup
+    # kontrolü/AYNI istisna (ArgoCD), yalnızca `request.operation` CREATE.
+    - name: only-admins-set-deletion-approved-by-tenant-on-create
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: CREATE
+          - key: "{{ request.object.metadata.annotations.\"platform.internal/deletion-approved-by\" || '' }}"
+            operator: NotEquals
+            value: ""
+      validate:
+        message: >-
+          Yeni bir Tenant claim'i "platform.internal/deletion-approved-by"
+          annotation'ıyla OLUŞTURULAMAZ — bu annotation yalnızca
+          platform-admins tarafından, SONRADAN, ayrı bir adımla eklenebilir.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"
+
+    - name: only-admins-set-deletion-approved-reason-tenant-on-create
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: CREATE
+          - key: "{{ request.object.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
+            operator: NotEquals
+            value: ""
+      validate:
+        message: >-
+          Yeni bir Tenant claim'i "platform.internal/deletion-approved-reason"
+          annotation'ıyla OLUŞTURULAMAZ — bu annotation yalnızca
+          platform-admins tarafından, SONRADAN, ayrı bir adımla eklenebilir.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"
+
+    - name: only-admins-set-deletion-approved-by-postgres-on-create
+      match:
+        any:
+          - resources:
+              kinds:
+                - PostgreSQLInstance
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: CREATE
+          - key: "{{ request.object.metadata.annotations.\"platform.internal/deletion-approved-by\" || '' }}"
+            operator: NotEquals
+            value: ""
+      validate:
+        message: >-
+          Yeni bir PostgreSQLInstance claim'i
+          "platform.internal/deletion-approved-by" annotation'ıyla
+          OLUŞTURULAMAZ — bu annotation yalnızca platform-admins tarafından,
+          SONRADAN, ayrı bir adımla eklenebilir.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"
+
+    - name: only-admins-set-deletion-approved-reason-postgres-on-create
+      match:
+        any:
+          - resources:
+              kinds:
+                - PostgreSQLInstance
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: CREATE
+          - key: "{{ request.object.metadata.annotations.\"platform.internal/deletion-approved-reason\" || '' }}"
+            operator: NotEquals
+            value: ""
+      validate:
+        message: >-
+          Yeni bir PostgreSQLInstance claim'i
+          "platform.internal/deletion-approved-reason" annotation'ıyla
+          OLUŞTURULAMAZ — bu annotation yalnızca platform-admins tarafından,
+          SONRADAN, ayrı bir adımla eklenebilir.
         deny:
           conditions:
             all:

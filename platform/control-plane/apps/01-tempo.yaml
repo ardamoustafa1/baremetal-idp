@@ -1,10 +1,15 @@
 # =============================================================================
 # sync-wave 1 — Tempo (trace depolama, Rook-Ceph RGW/S3 backend)
 #
-# !!! OTOMATİK SYNC KASITLI OLARAK KAPALI — 01-loki.yaml.tpl İLE BİREBİR AYNI
-# GEREKÇE (S3 kimlik bilgileri ${TEMPO_S3_ACCESS_KEY}/${TEMPO_S3_SECRET_KEY}
-# Git'e YAZILMAZ; 05-observability.sh yerel render + helm upgrade yapar,
-# bu Application yalnızca SONRADAN devralma içindir). !!!
+# !!! OTOMATİK SYNC KASITLI OLARAK KAPALI — 01-loki.yaml.tpl İLE BİREBİR
+# AYNI GEREKÇE (05-observability.sh `helm upgrade --install`'ı manuel
+# çalıştırır; bu Application yalnızca SONRADAN devralma içindir). !!!
+#
+# DÜZELTME (code review #12) — 01-loki.yaml.tpl İLE AYNI düzeltme:
+# `valueFiles` ÖNCEDEN ham `values.yaml.tpl`'e işaret ediyordu, o dosya
+# GERÇEK S3 SIR değerlerini DOĞRUDAN İÇERİYORDU. values.yaml.tpl artık
+# `extraEnv` + `tempo-s3-credentials` Secret referansı kullanıyor (HİÇBİR
+# SIR İÇERMİYOR) — render edilip commit edilen `values.yaml`'a geçirildi.
 # =============================================================================
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -26,7 +31,7 @@ spec:
       helm:
         releaseName: tempo
         valueFiles:
-          - $values/platform/control-plane/observability/tempo/values.yaml.tpl
+          - $values/platform/control-plane/observability/tempo/values.yaml
     - repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
       targetRevision: "main"
       ref: values

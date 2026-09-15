@@ -1,0 +1,15 @@
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: rogue-prod-forged
+  namespace: tenant-requests
+  annotations:
+    platform.internal/deletion-approved-by: "attacker"
+    platform.internal/deletion-approved-reason: "forged"
+spec:
+  teamName: rogue
+  costCenter: "CC-9999"
+  environment: prod
+  networkTier: isolated
+  quotaTier: large
+  oidcGroup: tenant-rogue

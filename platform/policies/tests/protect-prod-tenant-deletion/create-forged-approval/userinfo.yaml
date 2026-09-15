@@ -1,0 +1,8 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: UserInfo
+metadata:
+  name: unauthorized-requester
+userInfo:
+  username: attacker
+  groups:
+    - tenant-claim-requester

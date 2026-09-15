@@ -119,11 +119,24 @@ spec:
             # farklıysa BU SABİT GÜNCELLENMELİDİR (bkz. PLATFORM_CONTEXT.md teknik
             # borcu — CEPH_OBJECTSTORE_NAME ile AYNI sınıf kısıt).
             #
+            # DÜZELTME (code review #14): bu sabitin GERÇEK HARBOR_HOSTNAME ile
+            # SENKRON kaldığı `tests/verify-harbor-image-config.sh` ile OTOMATİK
+            # doğrulanır (CI'da HER PR'da çalışır — bkz. .github/workflows/
+            # platform-ci.yaml). Aşağıdaki HER imajın Harbor'da GERÇEKTEN var
+            # olduğunu/cosign ile imzalandığını ELLE (GERÇEK bir Harbor erişimi
+            # gerektirdiği için CI'DA DEĞİL) doğrulamak için:
+            # `tests/verify-harbor-image-exists.sh` — bkz. README.md "Provizyon
+            # öncesi kontrol listesi".
+            #
             # BU İMAJIN GERÇEKTEN Harbor'a mirror'lanıp cosign ile imzalanması AYRI,
-            # operasyonel bir adımdır — bkz. platform/control-plane/harbor/
-            # README.md#upstream-imaj-mirror'lama (Faz 12i'de eklendi). Bu commit o
-            # adımı ÇALIŞTIRMADI (bu ortamda gerçek bir Harbor/cosign yok) — yalnızca
-            # composition'ın KENDİ politikasıyla TUTARLI hâle getirildi.
+            # operasyonel bir adımdır (bu commit o adımı ÇALIŞTIRMADI — bu ortamda
+            # gerçek bir Harbor/cosign yok — yalnızca composition'ın KENDİ
+            # politikasıyla TUTARLI hâle getirildi). NOT: `platform/control-plane/
+            # harbor/README.md#upstream-imaj-mirror'lama` referansı önceki bir Faz'da
+            # YAZILMIŞTI ama o dosya bu repoda HİÇ OLUŞTURULMAMIŞ (code review #14
+            # sırasında keşfedilen, bağımsız bir dangling-doc-link hatası) — mirror'lama
+            # prosedürü şimdilik `verify-harbor-image-exists.sh`'in KULLANIM notunda
+            # ve aşağıdaki README.md referansında özetlenir.
             _harborHostname = "harbor.apps.example.internal"
             pgImage = "${_harborHostname}/cloudnative-pg/postgresql:${_pgImageTags[version]}"
 
@@ -664,7 +677,6 @@ spec:
                 externalSecret
                 catalogInfoConfigMap
             ] + _pdbItems
-
     - step: automatically-detect-ready-composed-resources
       functionRef:
         name: function-auto-ready

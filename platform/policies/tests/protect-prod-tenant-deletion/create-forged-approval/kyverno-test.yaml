@@ -1,0 +1,22 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: create-forged-approval
+policies:
+  - ../../../validation/10-protect-prod-tenant-deletion.yaml
+resources:
+  - resources.yaml
+userinfo: userinfo.yaml
+results:
+  - policy: protect-prod-tenant-deletion
+    rule: only-admins-set-deletion-approved-by-tenant-on-create
+    resources:
+      - rogue-prod-forged
+    kind: Tenant
+    result: fail
+  - policy: protect-prod-tenant-deletion
+    rule: only-admins-set-deletion-approved-reason-tenant-on-create
+    resources:
+      - rogue-prod-forged
+    kind: Tenant
+    result: fail

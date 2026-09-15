@@ -44,6 +44,11 @@ jobs:
           sudo mv /tmp/crossplane /usr/local/bin/
       - name: function.k ↔ composition.yaml senkron kontrolü
         run: bash "platform/compositions/${{ matrix.composition }}/tests/verify-sync.sh"
+      - name: Harbor hostname senkron kontrolü (yalnızca postgresql, code review #14)
+        if: matrix.composition == 'postgresql'
+        run: |
+          python3 -m pip install --quiet PyYAML==6.0.2
+          bash platform/compositions/postgresql/tests/verify-harbor-image-config.sh
       - name: crossplane render (gerçek Docker + function-kcl/function-auto-ready)
         run: bash "platform/compositions/${{ matrix.composition }}/tests/render-examples.sh" --check
       - uses: actions/upload-artifact@v4

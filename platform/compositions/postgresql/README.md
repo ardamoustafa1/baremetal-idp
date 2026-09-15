@@ -141,3 +141,33 @@ chainsaw test tests/e2e/
 Bu PR'da 1-4 **fiilen çalıştırıldı ve doğru sonuç verdi** (bkz.
 PLATFORM_CONTEXT.md Faz günlüğü); 5 yalnızca `chainsaw lint` +
 `test --no-cluster` ile yapısal olarak doğrulandı.
+
+## Provizyon öncesi kontrol listesi (code review #14)
+
+`function.k`'nin `pgImage`'ı `_harborHostname` sabitine KENETLİDİR (KCL'in
+shell ortam değişkenlerine erişimi YOK — bkz. `function.k`'deki
+`_harborHostname` yorumu). İlk provizyondan (veya `PLATFORM_BASE_DOMAIN`
+değiştikten) ÖNCE:
+
+```bash
+# 1. STATİK senkron kontrolü — function.k'nin _harborHostname'i GERÇEK
+#    HARBOR_HOSTNAME (.env'den türetilir) ile eşleşiyor mu? Ağ erişimi
+#    GEREKMEZ, CI'da HER PR'da çalışır.
+bash tests/verify-harbor-image-config.sh
+
+# 2. CANLI kontrol — her PostgreSQL sürümü (_pgImageTags) imajı GERÇEKTEN
+#    Harbor'da mevcut mu, (COSIGN_PUBLIC_KEY verildiyse) imzalı mı?
+#    GERÇEK bir Harbor'a ağ erişimi GEREKİR — CI'da ÇALIŞTIRILMAZ (bu
+#    repo'nun sandbox'ında gerçek bir Harbor/cosign yok, bkz.
+#    PLATFORM_CONTEXT.md). Provizyondan HEMEN önce operatör tarafından
+#    elle çalıştırılmalı.
+export HARBOR_HOSTNAME=harbor.<gerçek-domain>
+export COSIGN_PUBLIC_KEY=/path/to/cosign.pub   # isteğe bağlı, imza da doğrulanır
+bash tests/verify-harbor-image-exists.sh
+```
+
+İkisi de FAIL (exit≠0) verirse, `01-require-signed-images.yaml.tpl`'in
+`deny-non-harbor-images` kuralı ilk gerçek `XPostgreSQLInstance` claim'inde
+Postgres Cluster pod'unu SESSİZCE `ImagePullBackOff`/politika reddiyle
+başarısız kılar — bu iki script bunu provizyon ÖNCESİNDE, görünür şekilde
+yakalamak içindir.

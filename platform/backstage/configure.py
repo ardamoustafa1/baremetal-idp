@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Materialize non-secret deployment values before committing GitOps manifests."""
-import os,json
+import os,json,subprocess
 from pathlib import Path
 import yaml
 root=Path(__file__).resolve().parent
@@ -22,10 +22,21 @@ p=root/'catalog/users.yaml';p.write_text(yaml.safe_dump({'apiVersion':'backstage
 # realm import alone does not update existing realms.
 print('GitOps config üretildi. Değişiklikleri inceleyip commit edin; image bu dosyalardan build edilir.')
 
-# ArgoCD directory sources read .yaml/.yml/.json, not .tpl. Render concrete files.
-for stem in ['05-tenant-requests-project','06-tenant-requests-appset','07-backstage']:
-    folder=root.parent/'control-plane/apps'
-    text=(folder/f'{stem}.yaml.tpl').read_text()
-    for key in ['PLATFORM_REPO_URL','PLATFORM_REPO_REVISION','TENANT_REQUESTS_REPO_URL']:
-        text=text.replace('${'+key+'}',os.environ.get(key,'main'))
-    (folder/f'{stem}.yaml').write_text(text)
+# DÜZELTME (code review #11'in yan bulgusu — bu script'in KENDİSİ #11'in
+# ASIL kök nedenlerinden biriydi): bu dosya ÖNCEDEN 05/06/07 .tpl→.yaml
+# render'ını KENDİ, NAİF `str.replace()` mantığıyla yapıyordu —
+# `render-app-manifests.sh`'in (SUBST_VARS whitelist'i, çözülmemiş
+# değişken güvenlik ağı, `--verify` drift kontrolü İÇEREN) mantığından
+# TAMAMEN BAĞIMSIZ, İKİNCİ bir render YOLU. İKİ AYRI mekanizmanın AYNI
+# hedef dosyaları render etmesi, tam olarak bu OTURUMUN tekrar tekrar
+# bulduğu "manuel ile GitOps'un SESSİZCE SAPMASI" hata sınıfıdır (bkz.
+# Velero/Loki/Tempo — Faz 12k/code review #12) — burada İKİ RENDER
+# YOLUNUN BİRBİRİNDEN sapması riski. `render-app-manifests.sh` artık
+# TEK doğruluk kaynağı: bu script'in KENDİ zorunlu (`required`) listesi
+# TENANT_REQUESTS_REPO_URL/PLATFORM_REPO_URL'i ZATEN garanti ettiği için
+# `--require-tenant-requests` ile GÜVENLE çağrılabilir.
+subprocess.run(
+    [str(root.parent/'bootstrap/render-app-manifests.sh'),'--require-tenant-requests'],
+    check=True,
+    env={**os.environ,'PLATFORM_REPO_REVISION':os.environ.get('PLATFORM_REPO_REVISION','main')},
+)

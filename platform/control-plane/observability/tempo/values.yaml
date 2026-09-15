@@ -20,7 +20,7 @@ tempo:
     trace:
       backend: s3
       s3:
-        endpoint: rook-ceph-rgw-${CEPH_OBJECTSTORE_NAME}.rook-ceph.svc.cluster.local:80
+        endpoint: rook-ceph-rgw-platform-store.rook-ceph.svc.cluster.local:80
         bucket: tempo-storage
         insecure: true
         forcepathstyle: true

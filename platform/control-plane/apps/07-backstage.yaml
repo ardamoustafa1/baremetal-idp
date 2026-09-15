@@ -1,4 +1,26 @@
 # Backstage source: platform/backstage/portal; configure.py renders this to .yaml.
+#
+# !!! OTOMATİK SYNC KASITLI OLARAK KAPALI (syncPolicy.automated YOK) !!!
+#
+# DÜZELTME (code review #13, KRİTİK): bu Application ÖNCEDEN
+# `syncPolicy.automated: {prune:true, selfHeal:true}` ile KURULUYDU —
+# ama `$values/platform/backstage/app/values.yaml`'ın git'e COMMIT
+# EDİLEN varsayılan hâli `image.registry: REPLACE_ME` / `image.tag:
+# REPLACE_ME` İÇERİR (yalnızca `configure.py` GERÇEK registry/tag ile
+# bu dosyayı YERİNDE değiştirir — bkz. configure.py, `04-backstage.sh`
+# `install_backstage()`). Fresh bir checkout'ta/fork'ta, `configure.py`
+# HENÜZ ÇALIŞTIRILMADAN ArgoCD bu Application'ı senkronlarsa, REPLACE_ME
+# imajını ÇEKMEYE ÇALIŞIR (ImagePullBackOff — ÇALIŞMAYAN bir portal).
+# DAHA CİDDİSİ: `selfHeal:true` bunu YALNIZCA bir kerelik bir hata olmaktan
+# çıkarır — bir operatör `helm upgrade` ile GERÇEK imajı ELLE uygulasa
+# BİLE (04-backstage.sh'in yaptığı gibi, git'e COMMIT ETMEDEN), ArgoCD
+# bunu git'ten "drift" olarak algılar ve REPLACE_ME'YE GERİ ÇEVİRİR —
+# yani manuel bir düzeltme KALICI DEĞİLDİR, GitOps kaynağının KENDİSİ
+# (values.yaml'ın git'teki hâli) düzeltilmeden. Diğer TÜM bileşenlerle
+# (Velero/Loki/Tempo/underlay-root/Harbor) AYNI "adoption-only, önce
+# manuel bootstrap" desenine getirildi — `04-backstage.sh` (configure.py
+# DAHİL) GERÇEK image/registry/tag'i values.yaml'a YAZIP git'e COMMIT
+# ETTİKTEN SONRA otomatik sync GÜVENLE açılabilir.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -38,9 +60,7 @@ spec:
     server: https://kubernetes.default.svc
     namespace: backstage
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - ServerSideApply=true
       - CreateNamespace=true
+    # automated: KASITLI OLARAK YOK — yukarıdaki uyarıya bakın.

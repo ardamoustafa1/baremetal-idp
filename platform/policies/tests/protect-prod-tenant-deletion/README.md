@@ -113,3 +113,27 @@ değere düştü). Kuralın MANTIĞI (JMESPath karşılaştırması + grup kontr
 incelenip doğru bulundu ama GERÇEK bir admission webhook isteğine (ya da
 bu CLI'nin `oldObject`'i doğru bağladığı bir sürüme) karşı ÇALIŞTIRILMADI
 — bu, dürüstçe işaretlenen bir açık iş.
+
+## CREATE zamanında sahte onay annotation'ı — GERÇEK, KANITLANMIŞ açık (code review #15) + otomatik regresyon testi
+
+Yukarıdaki `only-admins-set-*` kuralları YALNIZCA `request.operation ==
+UPDATE` iken çalışıyordu — CREATE'İ HİÇ kapsamıyordu.
+`restrict-tenant-claim-creation.yaml`, CLAIM CREATE'ini "yetkili istekçi
+mi" diye kontrol eder ama annotation İÇERİĞİNİ kısıtlamaz — yani
+`tenant-claim-requester` rolündeki (admin OLMAYAN) bir kullanıcı,
+`spec.environment: prod` olan bir Tenant claim'ini, onay
+annotation'larını BAŞTAN sahte bir değerle DOLU olarak CREATE edebilirdi;
+`environment` immutable olduğu için bu sahte onay SONSUZA KADAR
+`oldObject`'te kalırdı — gerçek bir admin ASLA görmese bile.
+
+YENİ 4 kural (`only-admins-set-*-on-create`, Tenant/PostgreSQLInstance ×
+approved-by/approved-reason) bunu kapatır. CREATE, oldObject
+GEREKTİRMEDİĞİ için (UPDATE'in aksine) bu senaryo yukarıdaki CLI
+sınırlaması olmadan hem `kyverno apply --userinfo` ile HEM DE (bu ilk
+kez!) statik bir `kyverno-test.yaml` fixture'ı ile ("create-forged-approval/"
+dizini) GERÇEKTEN, otomatik regresyon paketine kanıtlanmış olarak eklendi
+— 3 senaryo (saldırgan+sahte annotation → RED; admin+annotation → KABUL;
+sahte annotation OLMADAN normal CREATE → ETKİLENMEDİ) elle `kyverno apply`
+ile doğrulandı; ilk senaryo AYRICA `platform/policies/tests/` altındaki
+40 testlik CI paketine `create-forged-approval/kyverno-test.yaml` olarak
+eklendi (`kyverno test` HER PR'da çalışır).

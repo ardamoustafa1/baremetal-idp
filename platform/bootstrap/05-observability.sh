@@ -293,12 +293,30 @@ install_loki() {
   read_obc_s3 loki-storage LOKI
 
   if [[ "${DRY_RUN}" == "true" ]]; then
-    log "[dry-run] helm upgrade --install loki grafana/loki --version ${LOKI_CHART_VERSION}"
+    log "[dry-run] loki-s3-credentials Secret'ı + helm upgrade --install loki grafana/loki --version ${LOKI_CHART_VERSION}"
     return 0
   fi
 
+  # DÜZELTME (code review #12): S3 kimlik bilgileri ÖNCEDEN yalnızca
+  # `envsubst` ile rendered/loki-values.yaml İÇİNE (helm -f ile geçilen,
+  # gitignored bir dosya) gömülüyordu — values.yaml.tpl'in KENDİ başlık
+  # yorumu "S3 kimlik bilgileri BURADA YOK, Secret referans alınır" DİYORDU
+  # ama GERÇEKTE dosyanın GÖVDESİ `secretAccessKey`/`accessKeyId`'yi
+  # DOĞRUDAN ${VAR} olarak içeriyordu (yorumun kendisiyle ÇELİŞEN bir
+  # implementasyon). Artık Velero'nun `credentials.existingSecret`
+  # deseniyle AYNI ruhta: GERÇEK bir Kubernetes Secret üretiliyor, values
+  # dosyası yalnızca `extraEnv` ile bu Secret'ı (AWS SDK'nın standart
+  # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY ortam değişkenleri ÜZERİNDEN)
+  # referans alıyor — artık HİÇBİR SIR values dosyasının/git'in İÇİNDE
+  # YOK, dosya bu yüzden GÜVENLE render-edilip commit EDİLEBİLİR hâle
+  # geldi (bkz. render-app-manifests.sh'e eklenen platform/control-plane/
+  # observability/ girdisi).
+  ensure_secret observability loki-s3-credentials \
+    "AWS_ACCESS_KEY_ID=${LOKI_S3_ACCESS_KEY}" \
+    "AWS_SECRET_ACCESS_KEY=${LOKI_S3_SECRET_KEY}"
+
   mkdir -p "${OBS_DIR}/rendered"
-  envsubst '${LOKI_S3_ACCESS_KEY} ${LOKI_S3_SECRET_KEY} ${CEPH_OBJECTSTORE_NAME}' \
+  envsubst '${CEPH_OBJECTSTORE_NAME}' \
     < "${OBS_DIR}/loki/values.yaml.tpl" \
     > "${OBS_DIR}/rendered/loki-values.yaml"
 
@@ -332,12 +350,19 @@ install_tempo() {
   read_obc_s3 tempo-storage TEMPO
 
   if [[ "${DRY_RUN}" == "true" ]]; then
-    log "[dry-run] helm upgrade --install tempo grafana/tempo --version ${TEMPO_CHART_VERSION}"
+    log "[dry-run] tempo-s3-credentials Secret'ı + helm upgrade --install tempo grafana/tempo --version ${TEMPO_CHART_VERSION}"
     return 0
   fi
 
+  # DÜZELTME (code review #12) — Loki'nin `install_loki()` fonksiyonundaki
+  # AYNI düzeltme: Secret ÜRETİLİYOR, values dosyası `extraEnv` ile
+  # referans alıyor, dosya İÇİNDE artık HİÇBİR SIR YOK.
+  ensure_secret observability tempo-s3-credentials \
+    "AWS_ACCESS_KEY_ID=${TEMPO_S3_ACCESS_KEY}" \
+    "AWS_SECRET_ACCESS_KEY=${TEMPO_S3_SECRET_KEY}"
+
   mkdir -p "${OBS_DIR}/rendered"
-  envsubst '${TEMPO_S3_ACCESS_KEY} ${TEMPO_S3_SECRET_KEY} ${CEPH_OBJECTSTORE_NAME}' \
+  envsubst '${CEPH_OBJECTSTORE_NAME}' \
     < "${OBS_DIR}/tempo/values.yaml.tpl" \
     > "${OBS_DIR}/rendered/tempo-values.yaml"
 

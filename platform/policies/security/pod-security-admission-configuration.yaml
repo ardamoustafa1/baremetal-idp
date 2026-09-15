@@ -87,3 +87,6 @@ plugins:
           - backstage
           - pki-test
           - observability-cert-alert-test
+          - cnpg-system
+          - velero
+          - offsite-sync

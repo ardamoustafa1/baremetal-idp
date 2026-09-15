@@ -55,7 +55,7 @@ loki:
       ruler: loki-storage
       admin: loki-storage
     s3:
-      endpoint: rook-ceph-rgw-${CEPH_OBJECTSTORE_NAME}.rook-ceph.svc.cluster.local:80
+      endpoint: rook-ceph-rgw-platform-store.rook-ceph.svc.cluster.local:80
       # NOT (bkz. compositions/postgresql/function.k'deki AYNI teknik borç):
       # RGW object store adı ("platform-store") burada da SABİT — Faz 1'in
       # .env.example varsayılanıyla KENETLİ.
