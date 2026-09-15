@@ -72,12 +72,26 @@ alertmanager:
           accessModes: ["ReadWriteOnce"]
           resources:
             requests: {storage: 5Gi}
-  # Statik konfigürasyon BURADA YOK — 05-observability.sh, .env'deki
-  # ALERTMANAGER_WEBHOOK_URL'den bir Secret üretip alertmanagerSpec.
-  # alertmanagerConfigSecret üzerinden bağlar (aşağıda, DIŞARIDAN override).
-  # values.yaml'da yalnızca resources/depolama; routing config
-  # resources/alertmanager-config-secret.yaml.tpl'DE (render edilip
-  # script'çe uygulanır).
+    # DÜZELTME (bu turda, taze bir denetimde bulundu — ORTA): bu satır ÖNCEDEN
+    # YOKTU — yorum "alertmanagerSpec.alertmanagerConfigSecret üzerinden
+    # bağlanıyor" diyordu ama böyle bir ALAN bu dosyada HİÇ TANIMLI DEĞİLDİ
+    # (dangling belge iddiası). GERÇEK bağlantı, `resources/alertmanager-
+    # config-{slack,teams}.yaml.tpl`'in ürettiği Secret'ın adının (`alertmanager-
+    # kube-prometheus-stack-alertmanager`) Prometheus Operator'ın Alertmanager
+    # CR'si için `configSecret` alanı BOŞ bırakıldığında kullandığı ÖRTÜK
+    # varsayılana (`alertmanager-<CR-adı>`, CRD şemasından CANLI doğrulandı:
+    # `helm show crds prometheus-community/kube-prometheus-stack --version
+    # 65.5.1` içindeki `configSecret` alan açıklaması) TESADÜFEN denk gelmesine
+    # dayanıyordu. Artık `configSecret` AÇIKÇA aynı adı REFERANS ALIYOR — Helm
+    # release adı (`kube-prometheus-stack`) ileride değişirse bu bağlantı
+    # SESSİZCE KOPMAZ, script'in ürettiği Secret adı da GÜNCELLENMELİDİR (ikisi
+    # artık AYNI, TEK bir yerde (bu alan) görünür).
+    configSecret: alertmanager-kube-prometheus-stack-alertmanager
+  # routing config BURADA YOK — 05-observability.sh, .env'deki
+  # ALERTMANAGER_WEBHOOK_URL'den yukarıdaki `configSecret`'in referans aldığı
+  # Secret'ı üretir (resources/alertmanager-config-{slack,teams}.yaml.tpl,
+  # render edilip script'çe uygulanır). values.yaml'da yalnızca resources/
+  # depolama + YUKARIDAKİ configSecret referansı.
 
 # --- Grafana ---------------------------------------------------------------
 grafana:

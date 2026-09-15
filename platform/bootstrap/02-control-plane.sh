@@ -173,7 +173,15 @@ preflight() {
 # kontrol ediyor.
 # =============================================================================
 check_git_placeholders_resolved() {
-  if ! "${REPO_ROOT}/platform/bootstrap/render-app-manifests.sh" --verify 2>&1 | tee /tmp/render-verify.out; then
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — ORTA): sabit `/tmp/
+  # render-verify.out` adı yerine `mktemp` kullanılıyor — sabit bir ad,
+  # bu script'in paralel/art arda çalıştırılmasında (aynı host'ta birden
+  # fazla operatör/CI job'u) dosyaların birbirini EZMESİNE, ya da paylaşımlı
+  # `/tmp`'te ÖNCEDEN VAR OLAN bir symlink varsa çıktının BAŞKA bir yere
+  # YÖNLENDİRİLMESİNE (klasik symlink saldırı deseni) açıktır.
+  local _verify_out; _verify_out="$(mktemp)"
+  trap 'rm -f "${_verify_out}"' RETURN
+  if ! "${REPO_ROOT}/platform/bootstrap/render-app-manifests.sh" --verify 2>&1 | tee "${_verify_out}"; then
     err ""
     err "Yukarıdaki .tpl dosyaları için karşılık gelen .yaml dosyaları YOK ya"
     err "da GÜNCEL DEĞİL — ArgoCD'nin platform-root Application'ı bu"
@@ -193,10 +201,8 @@ check_git_placeholders_resolved() {
     err "bu HATA sayılmaz."
     err ""
     err "Sonra bu script'i tekrar çalıştırın. (PLATFORM_CONTEXT.md teknik borç #10)"
-    rm -f /tmp/render-verify.out
     return 1
   fi
-  rm -f /tmp/render-verify.out
   ok "Tüm render'lanmış .yaml Application manifestleri güncel (ArgoCD bunları keşfedebilir)"
 }
 

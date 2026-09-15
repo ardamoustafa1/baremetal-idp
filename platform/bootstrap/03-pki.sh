@@ -63,6 +63,24 @@ die() { err "$*"; exit 1; }
 
 trap 'err "Satır ${LINENO}: komut başarısız (exit=$?). Yukarıdaki çıktıya bakın."' ERR
 
+# DÜZELTME (bu turda, taze bir denetimde bulundu — YÜKSEK): bu script'teki
+# birden fazla fonksiyon (ör. `enable_vault_tls()`) `local work; work="$(mktemp
+# -d)"` deseniyle GEÇİCİ bir dizine Vault'un TLS ÖZEL ANAHTARI gibi SIR
+# materyali yazıyor ve yalnızca fonksiyonun EN SONUNDA `rm -rf "${work}"` ile
+# temizliyordu — ama fonksiyon içinde (SHA-256 uyuşmazlığı, "hiçbir pod active
+# değil" gibi) en az iki `die` çağrısı VE `set -e` altında başarısız
+# olabilecek onlarca komut, o temizlik satırına HİÇ ULAŞILMADAN script'i
+# SONLANDIRABİLİR — `die()` `exit` kullandığı için (ERR trap'ı TETİKLEMEZ,
+# CANLI test edildi) yalnızca ERR trap'ı GENİŞLETMEK YETERLİ DEĞİLDİR. Bu
+# EXIT trap'ı (ERR trap'ından FARKLI olarak `die()`'nin `exit`'i DAHİL HER
+# çıkış yolunda tetiklenir, CANLI test edildi — bash'in `local` değişkenlere
+# dinamik kapsam vermesi sayesinde script'in EN BAŞINDA tanımlansa bile o AN
+# hangi fonksiyonun İÇİNDEYSE onun `work` değişkenini GÖRÜR) script SONA
+# ERDİĞİNDE (normal veya hata ile) HANGİ fonksiyonun `work` dizini AÇIK
+# KALDIYSA onu temizler — tek, merkezi bir düzeltme, HER `work`-kullanan
+# fonksiyonu kapsar.
+trap '[[ -n "${work:-}" && -d "${work:-}" ]] && rm -rf "${work}" 2>/dev/null; true' EXIT
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --only)           ONLY="${2:-}"; shift 2 ;;
@@ -288,13 +306,19 @@ enable_vault_audit() {
     return 0
   fi
 
-  if vexec audit enable file file_path=/vault/audit/vault-audit.log 2>&1 | tee /tmp/vault-audit-enable.log; then
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — ORTA): sabit `/tmp/
+  # vault-audit-enable.log` adı YERİNE `mktemp` — bkz. check_git_placeholders_
+  # resolved()'daki (02-control-plane.sh) AYNI düzeltmenin gerekçesi
+  # (sabit ad = paralel çalıştırma çakışması/symlink riski).
+  local _audit_log; _audit_log="$(mktemp)"
+  trap 'rm -f "${_audit_log}"' RETURN
+  if vexec audit enable file file_path=/vault/audit/vault-audit.log 2>&1 | tee "${_audit_log}"; then
     ok "  Audit device 'file/' etkinleştirildi (/vault/audit/vault-audit.log, vault-0/1/2'nin her birinde YEREL)"
     warn "  NOT: her Vault pod'u KENDİ yerel audit log'unu tutar (paylaşımlı PV YOK) —"
     warn "  merkezi bir görünüm için 3 pod'un log'unu toplayan bir Loki/Promtail"
     warn "  DaemonSet'i (bkz. control-plane/observability/) veya benzeri bir"
     warn "  toplayıcı GEREKİR — bu görev kapsamında YAZILMADI (teknik borç)."
-  elif grep -qi "already in use\|already enabled" /tmp/vault-audit-enable.log; then
+  elif grep -qi "already in use\|already enabled" "${_audit_log}"; then
     ok "  Audit device 'file/' zaten etkin (idempotent — bu bir hata DEĞİL)"
   else
     err "  Audit device etkinleştirilemedi — yukarıdaki çıktıya bakın."
@@ -367,6 +391,7 @@ verify_vault() {
 setup_kubernetes_auth() {
   step "2/8  Vault Kubernetes Auth Method"
   require_vault_token
+  local _auth_enable_out _kv_enable_out
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     log "[dry-run] auth/kubernetes enable + configure + policy + role"
@@ -396,7 +421,24 @@ EOF
   ok "vault SA → system:auth-delegator bağlandı"
 
   # --- Auth method enable (idempotent: zaten varsa hata verir, yut) -------
-  vexec auth enable kubernetes 2>/dev/null || log "  auth/kubernetes zaten etkin"
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — DÜŞÜK-ORTA): bu satır
+  # ÖNCEDEN `2>/dev/null || log "zaten etkin"` ile HER TÜRLÜ hatayı (yetkisiz
+  # token, mühürlü Vault, ağ sorunu) "path zaten kullanımda" İLE AYNI
+  # mesajla yutuyordu — GERÇEK neden BAŞKA bir şeyse script SESSİZCE devam
+  # eder, kök neden GİZLENİR, hata çok SONRAKİ bir adımda (ör. auth/
+  # kubernetes/config yazımı) daha BELİRSİZ bir şekilde ortaya çıkardı.
+  # Artık yalnızca "path zaten kullanımda" (Vault'un GERÇEK, idempotent
+  # yeniden-çalıştırma mesajı) yutulur — BAŞKA HERHANGİ bir hata script'i
+  # AÇIKÇA durdurur.
+  _auth_enable_out="$(vexec auth enable kubernetes 2>&1)" && log "  auth/kubernetes etkinleştirildi" || {
+    if echo "${_auth_enable_out}" | grep -qi "already in use\|already enabled"; then
+      log "  auth/kubernetes zaten etkin"
+    else
+      err "  auth/kubernetes etkinleştirilemedi:"
+      echo "${_auth_enable_out}" | sed 's/^/         /' >&2
+      die "Beklenmeyen hata — yukarıya bakın (VAULT_TOKEN/Vault durumu kontrol edilmeli)."
+    fi
+  }
 
   # --- Vault kendi pod'unun içinden kendi in-cluster ayarlarını okur ------
   # DÜZELTME (Faz 12l, code review #2 — YÜKSEK): `token_reviewer_jwt=@dosya`
@@ -424,7 +466,18 @@ EOF
   # PushSecret round-trip'i için (bkz. compositions/postgresql/function.k §7).
   # Faz 6'da "henüz enable edilmedi" olarak bırakılmıştı (crossplane-
   # policy.hcl'deki not) — ilk gerçek tüketici bu faz.
-  vexec secrets enable -path=kv -version=2 kv 2>/dev/null || log "  kv/ zaten mount edilmiş"
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — DÜŞÜK-ORTA): yukarıdaki
+  # `auth enable kubernetes` İLE AYNI düzeltme — yalnızca "zaten mount
+  # edilmiş" GERÇEK hatası yutulur, BAŞKA HERHANGİ bir hata AÇIKÇA durdurur.
+  _kv_enable_out="$(vexec secrets enable -path=kv -version=2 kv 2>&1)" && log "  kv/ mount edildi (version=2)" || {
+    if echo "${_kv_enable_out}" | grep -qi "already in use\|already enabled\|path is already"; then
+      log "  kv/ zaten mount edilmiş"
+    else
+      err "  kv/ mount edilemedi:"
+      echo "${_kv_enable_out}" | sed 's/^/         /' >&2
+      die "Beklenmeyen hata — yukarıya bakın (VAULT_TOKEN/Vault durumu kontrol edilmeli)."
+    fi
+  }
 
   # --- Policy'ler -----------------------------------------------------------
   for p in cert-manager crossplane root-ca-admin provider-terraform eso-tenant-secrets eso-platform-secrets; do

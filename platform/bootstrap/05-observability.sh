@@ -410,7 +410,22 @@ sync_opencost() {
 
   # OpenCost pod'u ConfigMap'i env'den okuyor — custom pricing ConfigMap'i
   # OpenCost'tan SONRA değiştiyse pod'un yeniden başlatılması gerekir.
-  kubectl -n opencost rollout restart deployment/opencost >/dev/null 2>&1 || true
+  #
+  # DÜZELTME (bu turda, taze bir denetimde bulundu — DÜŞÜK-ORTA): bu satır
+  # ÖNCEDEN `|| true` ile HER TÜRLÜ hatayı (RBAC, yanlış isim) SESSİZCE
+  # yutuyordu — script "OpenCost doğrulandı" derken restart aslında
+  # BAŞARISIZ olabilirdi; operatör `.env`'deki OPENCOST_*_HOURLY_COST'u
+  # güncelleyip script'i tekrar çalıştırır, "başarılı" mesajını görür, ama
+  # cost-center raporları SESSİZCE eski fiyatlarla üretilmeye DEVAM ederdi.
+  # `rollout restart` bir Deployment ZATEN VARKEN (üstteki wait_for bunu
+  # doğruladı) BAŞARISIZ olmak için GERÇEK bir nedene (RBAC/API hatası)
+  # ihtiyaç duyar — "belki beklenen bir hata" değildir, bu yüzden `|| true`
+  # ile YUTULMAMALIYDI. Artık hem restart komutu HEM DE rollout'un GERÇEKTEN
+  # tamamlandığı (yeni pod'un ayakta olduğu) doğrulanıyor.
+  kubectl -n opencost rollout restart deployment/opencost \
+    || die "OpenCost deployment restart edilemedi — custom pricing ConfigMap değişikliği pod'a YANSIMAYACAK."
+  wait_for "OpenCost deployment (custom pricing restart sonrası)" 300 10 \
+    kubectl -n opencost rollout status deployment/opencost --timeout=5s
 
   verify_opencost
 }
