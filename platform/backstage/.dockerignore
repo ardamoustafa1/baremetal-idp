@@ -1,0 +1,7 @@
+**/node_modules
+**/dist
+**/dist-types
+**/.yarn/install-state.gz
+**/.yarn/cache
+**/app-config.local.yaml
+**/.git

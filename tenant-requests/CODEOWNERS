@@ -1,0 +1,6 @@
+# Her tenant talebi platform ekibinin onayını gerektirir.
+# TODO: <org>/platform-team gerçek GitHub takım adıyla değiştirilecek.
+
+*                   @<org>/platform-team
+/tenants/           @<org>/platform-team
+/.github/           @<org>/platform-team

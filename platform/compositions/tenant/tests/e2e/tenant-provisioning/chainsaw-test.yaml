@@ -1,0 +1,276 @@
+# =============================================================================
+# E2E: Tenant claim'i uygulandığında 6 kaynak tipi de Ready oluyor mu +
+# iki farklı tenant'ın Vault PKI role'leri birbirinin domain'ine erişemiyor mu.
+#
+# ÖN KOŞUL (bu test bir gerçek cluster'a karşı çalıştırılır):
+#   Faz 1-6 kurulu: XRD + Composition (bu dizin) + Functions (function-kcl,
+#   function-auto-ready) + ProviderConfig'ler + Vault/cert-manager (Faz 3)
+#   uygulanmış olmalı.
+#
+# ÇALIŞTIRMA:
+#   chainsaw test platform/compositions/tenant/tests/e2e/
+# =============================================================================
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tenant-provisioning
+spec:
+  timeouts:
+    assert: 3m
+    exec: 30s
+  steps:
+    - name: apply-tenant-a
+      try:
+        - apply:
+            file: claim-acme.yaml
+        - assert:
+            file: claim-acme.yaml
+
+    - name: apply-tenant-b
+      try:
+        - apply:
+            file: claim-globex.yaml
+        - assert:
+            file: claim-globex.yaml
+
+    # --- 1. Namespace -------------------------------------------------------
+    - name: assert-namespace
+      try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: tenant-acme-dev
+                labels:
+                  platform.internal/cost-center: CC-1042
+                  platform.internal/owner: team-acme
+                  platform.internal/environment: dev
+                  platform.internal/managed-by: crossplane
+                  platform.internal/tenant: acme
+                  platform.internal/tier: small
+              status:
+                phase: Active
+
+    # --- 2. RBAC (Role + RoleBinding) ---------------------------------------
+    - name: assert-rbac
+      try:
+        - assert:
+            resource:
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: Role
+              metadata:
+                name: tenant-admin
+                namespace: tenant-acme-dev
+        - assert:
+            resource:
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: RoleBinding
+              metadata:
+                name: tenant-admin-binding
+                namespace: tenant-acme-dev
+              subjects:
+                - kind: Group
+                  apiGroup: rbac.authorization.k8s.io
+                  name: "oidc:tenant-acme"
+              roleRef:
+                kind: Role
+                name: tenant-admin
+
+    # --- 3. ResourceQuota ----------------------------------------------------
+    - name: assert-quota
+      try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: ResourceQuota
+              metadata:
+                name: tenant-quota
+                namespace: tenant-acme-dev
+              spec:
+                hard:
+                  requests.cpu: "4"
+                  requests.memory: 8Gi
+                  limits.cpu: "4"
+                  limits.memory: 8Gi
+                  pods: "10"
+
+    # --- 4. LimitRange --------------------------------------------------------
+    - name: assert-limitrange
+      try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: LimitRange
+              metadata:
+                name: tenant-limits
+                namespace: tenant-acme-dev
+
+    # --- 5. NetworkPolicy (default-deny + isolated tier) --------------------
+    - name: assert-networkpolicy
+      try:
+        - assert:
+            resource:
+              apiVersion: cilium.io/v2
+              kind: CiliumNetworkPolicy
+              metadata:
+                name: tenant-default-deny
+                namespace: tenant-acme-dev
+              spec:
+                ingress: []
+                egress: []
+        - assert:
+            resource:
+              apiVersion: cilium.io/v2
+              kind: CiliumNetworkPolicy
+              metadata:
+                name: tenant-network-tier
+                namespace: tenant-acme-dev
+              spec:
+                # isolated tier: yalnızca DNS egress'i, sıfır intra-tenant kural
+                egress:
+                  - toEndpoints:
+                      - matchLabels:
+                          k8s:io.kubernetes.pod.namespace: kube-system
+                          k8s:k8s-app: kube-dns
+
+    # --- ServiceAccount (task item 2 — 6'lık kabul listesinde değil ama
+    #     composition'ın gerçek çıktısı, doğrulanıyor) ------------------------
+    - name: assert-serviceaccount
+      try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: ServiceAccount
+              metadata:
+                name: tenant-workload
+                namespace: tenant-acme-dev
+
+    # --- cert-manager ServiceAccount + token-mint RBAC (Faz 11 — tenant-issuer
+    #     Vault serviceAccountRef auth için ZORUNLU, gerçek kind testinde
+    #     eksikliği keşfedilip eklendi) -------------------------------------
+    - name: assert-cert-manager-serviceaccount
+      try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: ServiceAccount
+              metadata:
+                name: cert-manager
+                namespace: tenant-acme-dev
+        - assert:
+            resource:
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: RoleBinding
+              metadata:
+                name: cert-manager-tokenrequest
+                namespace: tenant-acme-dev
+              subjects:
+                - kind: ServiceAccount
+                  name: cert-manager
+                  namespace: cert-manager
+
+    # --- Grafana dashboard ConfigMap (Faz 9, madde 2 — otomatik klasör/dashboard) --
+    - name: assert-grafana-dashboard-configmap
+      try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: tenant-dashboard
+                namespace: tenant-acme-dev
+                labels:
+                  grafana_dashboard: "1"
+                annotations:
+                  grafana_folder: Tenants/acme-dev
+
+    # --- 6. Issuer (namespaced, Vault-backed) — Ready=True bekleniyor -------
+    - name: assert-issuer-ready
+      try:
+        - assert:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Issuer
+              metadata:
+                name: tenant-issuer
+                namespace: tenant-acme-dev
+              spec:
+                vault:
+                  path: pki-int-dev/sign/tenant-acme
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    # --- Vault Workspace (provider-terraform) — tenant-scoped PKI role/policy
+    - name: assert-vault-workspace
+      try:
+        - assert:
+            resource:
+              apiVersion: tf.upbound.io/v1beta1
+              kind: Workspace
+              metadata:
+                name: tenant-acme-dev-vault
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+                  - type: Synced
+                    status: "True"
+
+    # =========================================================================
+    # İZOLASYON TESTİ: acme'nin Vault PKI rolü globex'in domain'ine sertifika
+    # ÜRETEMEZ. cert-manager'ın kendi ServiceAccount'ından TokenRequest API ile
+    # (kubectl create token) üretilen kısa ömürlü bir JWT ile Vault'a login
+    # olunur — STATİK BİR KİMLİK BİLGİSİ KULLANILMAZ.
+    # =========================================================================
+    - name: verify-tenant-pki-isolation
+      try:
+        - script:
+            content: |
+              set -euo pipefail
+
+              JWT="$(kubectl create token cert-manager -n cert-manager --duration=5m)"
+
+              LOGIN_JSON="$(kubectl -n vault exec vault-0 -- sh -c \
+                "VAULT_ADDR=http://127.0.0.1:8200 vault write -format=json auth/kubernetes/login role=cert-manager jwt=${JWT}")"
+              CM_TOKEN="$(echo "${LOGIN_JSON}" | jq -r '.auth.client_token')"
+
+              echo "--- acme kendi domain'i için sertifika istiyor (BAŞARILI OLMALI) ---"
+              kubectl -n vault exec vault-0 -- sh -c \
+                "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=${CM_TOKEN} vault write pki-int-dev/issue/tenant-acme common_name=probe.tenant-acme-dev.svc.cluster.local"
+
+              echo "--- acme'nin rolüyle globex'in domain'i isteniyor (REDDEDİLMELİ) ---"
+              if kubectl -n vault exec vault-0 -- sh -c \
+                   "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=${CM_TOKEN} vault write pki-int-dev/issue/tenant-acme common_name=probe.tenant-globex-dev.svc.cluster.local" \
+                   2>/tmp/cross-tenant-attempt.log; then
+                echo "❌ BEKLENMEDİK: cross-tenant sertifika isteği BAŞARILI OLDU (izolasyon BOZUK)"
+                cat /tmp/cross-tenant-attempt.log
+                exit 1
+              else
+                echo "✅ BEKLENEN: cross-tenant istek Vault tarafından reddedildi"
+                grep -qi "domain" /tmp/cross-tenant-attempt.log \
+                  || { echo "UYARI: red mesajı beklenen 'domain' hatasını içermiyor, elle kontrol edin"; cat /tmp/cross-tenant-attempt.log; }
+              fi
+
+              echo "--- ters yön: globex'in rolüyle acme'nin domain'i isteniyor (REDDEDİLMELİ) ---"
+              if kubectl -n vault exec vault-0 -- sh -c \
+                   "VAULT_ADDR=http://127.0.0.1:8200 VAULT_TOKEN=${CM_TOKEN} vault write pki-int-dev/issue/tenant-globex common_name=probe.tenant-acme-dev.svc.cluster.local" \
+                   2>/tmp/cross-tenant-attempt2.log; then
+                echo "❌ BEKLENMEDİK: ters yönde de cross-tenant isteği BAŞARILI OLDU"
+                cat /tmp/cross-tenant-attempt2.log
+                exit 1
+              else
+                echo "✅ BEKLENEN: ters yönde de Vault tarafından reddedildi"
+              fi
+            check:
+              ($error): ~
+              (contains($stdout, 'BEKLENEN')): true
+
+    - name: cleanup
+      try:
+        - delete:
+            file: claim-acme.yaml
+        - delete:
+            file: claim-globex.yaml

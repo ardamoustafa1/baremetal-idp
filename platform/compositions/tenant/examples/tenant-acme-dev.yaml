@@ -1,0 +1,20 @@
+# =============================================================================
+# Örnek Claim — küçük, izole bir dev tenant'ı
+#
+# Gerçek kullanımda bu dosya `tenant-requests` reposunda `tenants/acme.yaml`
+# olarak yaşar (bkz. ADR-0001 Bölüm 3, conventions.md §6). Burada, KCL
+# composition'ının doğrulanması için `platform/compositions/tenant/` altında
+# tutuluyor.
+# =============================================================================
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: acme-dev
+  namespace: tenant-requests
+spec:
+  teamName: acme
+  costCenter: "CC-1042"
+  environment: dev
+  networkTier: isolated   # yalnızca kube-dns egress'i — dev'de en kısıtlı varsayılan
+  quotaTier: small        # 4 CPU / 8Gi / 10 pod
+  oidcGroup: tenant-acme

@@ -1,0 +1,16 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: denied-requester
+policies:
+  - ../../../validation/04-restrict-tenant-claim-creation.yaml
+resources:
+  - resources.yaml
+userinfo: userinfo.yaml
+results:
+  - policy: restrict-tenant-claim-creation
+    rule: only-authorized-requesters
+    resources:
+      - rogue-dev
+    kind: Tenant
+    result: fail

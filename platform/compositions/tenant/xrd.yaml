@@ -1,0 +1,97 @@
+# =============================================================================
+# XTenant — Tenant self-servis soyutlaması
+# ADR-0001 Karar 2.1 (Crossplane, Terraform değil) + Karar 2.4 (KCL).
+#
+# Claim kind: Tenant (ürün ekiplerinin `tenant-requests` reposunda yazdığı)
+# Composite kind: XTenant (Crossplane'in ürettiği, cluster-scoped)
+# =============================================================================
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xtenants.platform.internal
+  labels:
+    platform.internal/layer: compositions
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  group: platform.internal
+  names:
+    kind: XTenant
+    plural: xtenants
+  claimNames:
+    kind: Tenant
+    plural: tenants
+  connectionSecretKeys: []
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - teamName
+                - costCenter
+                - environment
+                - networkTier
+                - quotaTier
+              properties:
+                teamName:
+                  type: string
+                  description: >-
+                    Tenant adı (ekip/ürün adı — ortam adı DEĞİL).
+                    conventions.md §1 ile birebir aynı kalıp.
+                  # conventions.md §1: ^[a-z][a-z0-9-]{1,28}[a-z0-9]$
+                  pattern: '^[a-z][a-z0-9-]{1,28}[a-z0-9]$'
+                  maxLength: 30
+                costCenter:
+                  type: string
+                  description: Maliyet merkezi kodu (conventions.md §3.1).
+                  pattern: '^CC-[0-9]{4}$'
+                environment:
+                  type: string
+                  description: Kapalı küme (conventions.md §2.3).
+                  enum: [dev, staging, prod]
+                networkTier:
+                  type: string
+                  description: >-
+                    isolated: yalnızca DNS egress'i.
+                    open: aynı tenant içi serbest + DNS egress/ingress.
+                    custom: default-deny dışında hiçbir kural üretilmez —
+                    tenant sonradan kendi CiliumNetworkPolicy'sini ekler.
+                  enum: [isolated, open, custom]
+                quotaTier:
+                  type: string
+                  description: >-
+                    t-shirt kaynak bütçesi. Değerler compositions/tenant/
+                    function.k içinde TEK bir yerde tanımlıdır (conventions §4).
+                  enum: [small, medium, large]
+                oidcGroup:
+                  type: string
+                  description: >-
+                    Keycloak grup adı (conventions.md §5: tenant-<name>).
+                    Namespace'teki admin RoleBinding'in subject'i budur —
+                    K8s API server OIDC entegrasyonu ÖN KOŞULDUR (henüz
+                    yapılmadı, bkz. PLATFORM_CONTEXT.md teknik borç).
+                  pattern: '^tenant-[a-z][a-z0-9-]{1,28}[a-z0-9]$'
+              x-kubernetes-validations:
+                # ZORUNLU: prod ortamında small tier yasak (conventions §4.2)
+                - rule: "!(self.environment == 'prod' && self.quotaTier == 'small')"
+                  message: "prod ortamında quotaTier=small kullanılamaz (conventions.md §4.2)."
+            status:
+              type: object
+              properties:
+                namespaceName:
+                  type: string
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type: {type: string}
+                      status: {type: string}
+                      reason: {type: string}
+                      message: {type: string}

@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backstage-app-config
+  namespace: backstage
+data:
+  app-config.yaml: "app:\n  title: Platform Developer Portal\n  baseUrl: https://backstage.${PLATFORM_BASE_DOMAIN}\n\
+    organization:\n  name: Platform\nbackend:\n  baseUrl: https://backstage.${PLATFORM_BASE_DOMAIN}\n\
+    \  listen:\n    port: 7007\n  csp:\n    connect-src:\n    - '''self'''\n    -\
+    \ 'http:'\n    - 'https:'\n  cors:\n    origin: https://backstage.${PLATFORM_BASE_DOMAIN}\n\
+    \  database:\n    client: pg\n    connection:\n      host: ${BACKSTAGE_DB_HOST}\n\
+    \      port: ${BACKSTAGE_DB_PORT}\n      user: ${BACKSTAGE_DB_USER}\n      password:\
+    \ ${BACKSTAGE_DB_PASSWORD}\n      database: backstage\nauth:\n  environment: production\n\
+    \  providers:\n    oidc:\n      production:\n        metadataUrl: https://${KEYCLOAK_HOSTNAME}/realms/${KEYCLOAK_REALM}/.well-known/openid-configuration\n\
+    \        clientId: backstage\n        clientSecret: ${BACKSTAGE_OIDC_CLIENT_SECRET}\n\
+    \        prompt: auto\n        signIn:\n          resolvers:\n          - resolver:\
+    \ emailMatchingUserEntityProfileEmail\n  session:\n    secret: ${AUTH_SESSION_SECRET}\n\
+    catalog:\n  rules:\n  - allow:\n    - Component\n    - System\n    - API\n   \
+    \ - Resource\n    - Location\n    - Group\n    - User\n    - Template\n  locations:\n\
+    \  - type: file\n    target: /app/catalog/organization.yaml\n  - type: file\n\
+    \    target: /app/catalog/platform-components.yaml\n  - type: file\n    target:\
+    \ /app/templates/create-tenant/template.yaml\n    rules:\n    - allow:\n     \
+    \ - Template\n  - type: file\n    target: /app/templates/request-postgres/template.yaml\n\
+    \    rules:\n    - allow:\n      - Template\n  - type: file\n    target: /app/catalog/users.yaml\n\
+    kubernetes:\n  serviceLocatorMethod:\n    type: multiTenant\n  clusterLocatorMethods:\n\
+    \  - type: config\n    clusters:\n    - name: platform\n      url: https://kubernetes.default.svc\n\
+    \      authProvider: serviceAccount\n      skipTLSVerify: false\n      skipMetricsLookup:\
+    \ true\n  customResources:\n  - group: platform.internal\n    apiVersion: v1alpha1\n\
+    \    plural: tenants\n  - group: platform.internal\n    apiVersion: v1alpha1\n\
+    \    plural: postgresqlinstances\n  - group: postgresql.cnpg.io\n    apiVersion:\
+    \ v1\n    plural: clusters\n  - group: platform.internal\n    apiVersion: v1alpha1\n\
+    \    plural: xtenants\n  - group: platform.internal\n    apiVersion: v1alpha1\n\
+    \    plural: xpostgresqlinstances\nintegrations:\n  github:\n  - host: github.com\n\
+    \    token: ${BACKSTAGE_GITHUB_TOKEN}\nscaffolder:\n  defaultAuthor:\n    name:\
+    \ platform-scaffolder-bot\n    email: platform-bot@example.internal\nplatformCatalog:\n\
+    \  enabled: true\n"

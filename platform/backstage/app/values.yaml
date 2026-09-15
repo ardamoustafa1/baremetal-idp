@@ -1,0 +1,29 @@
+# backstage/backstage chart 2.6.1: validated with helm template.
+backstage:
+  replicas: 1
+  image:
+    registry: REPLACE_ME
+    repository: platform/backstage
+    tag: REPLACE_ME
+    pullPolicy: IfNotPresent
+  extraAppConfig:
+    - configMapRef: backstage-app-config
+      filename: app-config.yaml
+  extraEnvVarsCM: [backstage-environment]
+  extraEnvVarsSecrets:
+    - backstage-db-connection
+    - backstage-oidc-client-secret
+    - backstage-github-token
+    - backstage-session
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {cpu: 500m, memory: 2Gi}
+serviceAccount:
+  create: true
+  name: backstage-k8s-reader
+service:
+  type: ClusterIP
+postgresql:
+  enabled: false
+ingress:
+  enabled: false

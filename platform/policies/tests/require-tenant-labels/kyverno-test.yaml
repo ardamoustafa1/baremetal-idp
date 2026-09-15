@@ -1,0 +1,33 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-tenant-labels
+policies:
+  - ../../validation/03-require-tenant-labels.yaml
+resources:
+  - resources.yaml
+results:
+  - policy: require-tenant-labels
+    rule: require-cost-center-owner-environment
+    resources:
+      - tenant-payments
+    kind: Namespace
+    result: pass
+  - policy: require-tenant-labels
+    rule: require-cost-center-owner-environment
+    resources:
+      - tenant-broken-missing
+    kind: Namespace
+    result: fail
+  - policy: require-tenant-labels
+    rule: require-cost-center-owner-environment
+    resources:
+      - tenant-broken-badformat
+    kind: Namespace
+    result: fail
+  - policy: require-tenant-labels
+    rule: require-cost-center-owner-environment
+    resources:
+      - argocd
+    kind: Namespace
+    result: skip

@@ -1,0 +1,42 @@
+# =============================================================================
+# Crossplane Function paketi — function-kcl
+# ADR-0001 Karar 2.4: KCL composition function, Patch&Transform DEĞİL.
+#
+# Aktivasyon adımları için: platform/control-plane/crossplane/README.md
+# =============================================================================
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-kcl
+  labels:
+    platform.internal/managed-by: crossplane-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-kcl:v0.10.0
+  runtimeConfigRef:
+    name: default
+  ignoreCrossplaneConstraints: false
+---
+# =============================================================================
+# EKSİK OLAN İKİNCİ FUNCTION (Faz 12b'de GERÇEK bir cluster'da keşfedildi):
+# Her iki Composition'ın (tenant, postgresql) pipeline'ı İKİ adımlıdır —
+# `function-kcl` (kaynakları üretir) + `function-auto-ready` (üretilen
+# kaynakların Ready durumunu XR'a yansıtır). Bu dosyada YALNIZCA
+# function-kcl tanımlıydı; GitOps ile kurulumda function-auto-ready HİÇ
+# kurulmayacak ve HER composition "function not found" ile başarısız
+# olacaktı. Faz 6/7/9/11'in tüm testleri bu boşluğu KAÇIRDI çünkü
+# `crossplane render` function'ları YEREL Docker'dan çalıştırır
+# (tests/functions.yaml'daki ayrı liste) ve kind testlerinde function'lar
+# ELLE kurulmuştu — repo'nun KENDİ GitOps dosyası hiç kullanılmamıştı.
+# =============================================================================
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-auto-ready
+  labels:
+    platform.internal/layer: control-plane
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/function-auto-ready:v0.7.0

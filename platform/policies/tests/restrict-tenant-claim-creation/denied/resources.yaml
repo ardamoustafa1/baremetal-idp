@@ -1,0 +1,12 @@
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: rogue-dev
+  namespace: tenant-requests
+spec:
+  teamName: rogue
+  costCenter: "CC-9999"
+  environment: dev
+  networkTier: isolated
+  quotaTier: small
+  oidcGroup: tenant-rogue

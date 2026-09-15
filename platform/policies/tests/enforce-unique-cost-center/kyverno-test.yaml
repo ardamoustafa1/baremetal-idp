@@ -1,0 +1,20 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: enforce-unique-cost-center
+policies:
+  - ../../validation/09-enforce-unique-cost-center.yaml
+resources:
+  - resources.yaml
+variables: values.yaml
+results:
+  - policy: enforce-unique-cost-center
+    rule: cost-center-must-be-unique-per-tenant
+    resources: ["acme-dev"]
+    kind: Tenant
+    result: pass
+  - policy: enforce-unique-cost-center
+    rule: cost-center-must-be-unique-per-tenant
+    resources: ["globex-dev"]
+    kind: Tenant
+    result: fail

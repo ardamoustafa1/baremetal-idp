@@ -1,0 +1,78 @@
+# =============================================================================
+# (1) Kim Tenant claim'i açabilir — RBAC + Kyverno kombinasyonu
+#
+# RBAC tarafı: platform/policies/rbac/tenant-claim-rbac.yaml
+# ENFORCE modunda — bu dosyadaki 5 politika hiçbiri Audit'te BIRAKILMADI
+# (görev kabul kriteri). Faz 2'nin 3 taban politikası (Audit'te kalan)
+# ayrı bir yaşam döngüsü kararıdır (policies/README.md), bu politikalar
+# YENİ ve doğrudan Enforce ile geliyor çünkü ihlalleri "izlemek" değil,
+# Tenant self-servis akışının GÜVENLİK SINIRINI oluşturuyorlar.
+#
+# ÖNEMLİ MİMARİ NOT: Gerçek kullanımda (ADR-0001 Bölüm 3) bir Tenant claim'i
+# `tenant-requests` reposunda bir PR ile önerilir; PR merge olunca ArgoCD
+# claim'i uygular. Bu durumda admission request'in `userInfo.username`'i
+# İNSANIN DEĞİL, ArgoCD'nin application-controller ServiceAccount'ıdır —
+# asıl "kim istedi" denetimi CODEOWNERS/PR incelemesinde olur. Bu politika,
+# (a) ArgoCD'nin kendi SA'sını istisna tutarak GitOps akışını bozmaz,
+# (b) birisi GitOps'u ATLAYIP doğrudan `kubectl apply` ile claim açmaya
+# çalışırsa (RBAC'ı da atlatabilecek yanlış bir yetkilendirmeyle) bunu
+# YAKALAR — yani asıl koruma PR incelemesi, bu ikinci bir bariyerdir.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-tenant-claim-creation
+  annotations:
+    policies.kyverno.io/title: Restrict Tenant Claim Creation
+    policies.kyverno.io/category: Multi-Tenancy / RBAC
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Tenant
+    policies.kyverno.io/description: >-
+      Yalnızca platform-tenant-requesters veya platform-admins grubundaki
+      kullanıcılar (veya ArgoCD'nin GitOps akışı) yeni bir Tenant claim'i
+      oluşturabilir.
+spec:
+  validationFailureAction: Enforce
+  background: false   # Yalnızca CREATE anında anlamlı — arka plan taraması gereksiz
+  rules:
+    - name: only-authorized-requesters
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: CREATE
+      validate:
+        message: >-
+          Yeni bir Tenant claim'i yalnızca platform-tenant-requesters veya
+          platform-admins Keycloak grubundaki kullanıcılar tarafından
+          açılabilir. Gerçek akış: tenant-requests reposunda bir PR açın
+          (ADR-0001 Bölüm 3).
+        deny:
+          conditions:
+            all:
+              # ArgoCD'nin kendi controller SA'sı İSTİSNA — GitOps akışı bu
+              # üzerinden gelir ve asıl denetim orada (PR/CODEOWNERS) yapılır.
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              # Üstteki koşul true (ArgoCD DEĞİL) VE aşağıdaki yetkili grupta
+              # değilse → reddet.
+              # NOT (kapsamlı-eksik-tamamlama görevi): API server
+              # `--oidc-groups-prefix=oidc:` ile kurulduğunda (bkz. docs/
+              # runbooks/k8s-api-server-oidc.md), `request.userInfo.groups`
+              # İÇİNDEKİ GERÇEK değer `oidc:platform-admins` olur, düz
+              # `platform-admins` DEĞİL — bu yüzden HER İKİ biçim de
+              # listelendi (önek KURULMADAN ÖNCEKİ geçiş dönemi + KURULDUKTAN
+              # SONRAKİ kalıcı durum için).
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-tenant-requesters
+                  - platform-admins
+                  - "oidc:platform-tenant-requesters"
+                  - "oidc:platform-admins"

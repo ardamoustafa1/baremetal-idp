@@ -1,0 +1,58 @@
+# =============================================================================
+# (4) Certificate → yalnızca onaylı Issuer'lar
+#
+# Onaylı liste (Faz 3 + Faz 6):
+#   - ClusterIssuer: vault-issuer-dev / vault-issuer-staging / vault-issuer-prod
+#   - Issuer (namespaced, tenant başına): yalnızca "tenant-issuer" adı
+#
+# BİLİNEN SINIR (tech debt — bkz. PLATFORM_CONTEXT.md): bu politika, bir
+# Issuer NESNESİNİN kendisinin GERÇEKTEN XTenant composition'ı tarafından
+# üretildiğini DOĞRULAMAZ — yalnızca Certificate'ın "tenant-issuer" ADINA
+# referans verdiğini doğrular. Sahte bir "tenant-issuer" objesi (kendi
+# namespace'inde, composition dışında elle yaratılmış) teorik olarak hâlâ
+# mümkündür; bunun kapatılması 05 numaralı politikadaki ownership-check
+# desenine (`protect-tenant-resourcequota`) benzer bir "Issuer sahipliği"
+# politikası gerektirir — bu görev kapsamında İSTENMEDİĞİ için yazılmadı.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-certificate-issuer
+  annotations:
+    policies.kyverno.io/title: Restrict Certificate to Approved Issuers
+    policies.kyverno.io/category: PKI
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Certificate
+    policies.kyverno.io/description: >-
+      cert-manager Certificate kaynakları yalnızca Faz 3/6'da tanımlanan
+      onaylı Issuer'ları (3 ClusterIssuer + tenant başına 1 namespaced
+      Issuer) referans alabilir.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: only-approved-issuers
+      match:
+        any:
+          - resources:
+              kinds:
+                - cert-manager.io/v1/Certificate
+      validate:
+        message: >-
+          Certificate yalnızca onaylı bir Issuer'a referans verebilir:
+          ClusterIssuer/vault-issuer-{dev,staging,prod} veya
+          Issuer/tenant-issuer (namespaced). Rastgele/özel bir Issuer'a
+          sertifika isteği açılamaz.
+        anyPattern:
+          - spec:
+              issuerRef:
+                kind: ClusterIssuer
+                name: "vault-issuer-dev | vault-issuer-staging | vault-issuer-prod"
+          - spec:
+              issuerRef:
+                kind: Issuer
+                name: "tenant-issuer"
+          - spec:
+              issuerRef:
+                # kind belirtilmemişse cert-manager varsayılanı "Issuer"dır
+                name: "tenant-issuer"

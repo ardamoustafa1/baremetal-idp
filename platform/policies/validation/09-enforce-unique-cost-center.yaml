@@ -1,0 +1,56 @@
+# =============================================================================
+# (6) cost-center → tenant 1:1 zorunluluğu — açık karar #19'un çözümü.
+#
+# NEDEN: OpenCost'un `aggregate=label:cost-center` sorgusu, aynı cost-center'ı
+# paylaşan birden çok tenant varsa maliyeti PAYLAŞILAN TOPLAM olarak döner —
+# weekly-report'un ve OpenCost raporunun tenant-başına doğruluğu, HER
+# cost-center'ın TAM OLARAK BİR tenant'a ait olmasına dayanır. Bu politika
+# bunu ADMISSION ZAMANINDA zorunlu kılar.
+#
+# YÖNTEM: `context.apiCall` ile TÜM mevcut Tenant claim'leri (namespace'ler
+# arası) çekilir, aynı `costCenter`'a sahip ama FARKLI bir `teamName`
+# taşıyan bir claim varsa REDDEDİLİR. Kendi güncellemesi (aynı teamName)
+# engellenmez.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-unique-cost-center
+  annotations:
+    policies.kyverno.io/title: Enforce unique cost-center per tenant
+    policies.kyverno.io/category: Tenant Guardrails
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Tenant
+    policies.kyverno.io/description: >-
+      Bir cost-center değeri, birden fazla FARKLI tenant (teamName)
+      tarafından kullanılamaz — OpenCost/weekly-report'un tenant-başına
+      maliyet doğruluğu bu 1:1 eşlemeye dayanır.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: cost-center-must-be-unique-per-tenant
+      match:
+        any:
+          - resources:
+              kinds:
+                - platform.internal/v1alpha1/Tenant
+      context:
+        - name: existingTenants
+          apiCall:
+            urlPath: "/apis/platform.internal/v1alpha1/tenants"
+            jmesPath: "items[?spec.costCenter == '{{ request.object.spec.costCenter }}' && spec.teamName != '{{ request.object.spec.teamName }}'].{teamName: spec.teamName, namespace: metadata.namespace, name: metadata.name}"
+      validate:
+        message: >-
+          cost-center '{{ request.object.spec.costCenter }}' zaten
+          '{{ existingTenants }}' tarafından kullanılıyor — her cost-center
+          TAM OLARAK bir tenant'a (teamName) ait olmalıdır (OpenCost/
+          weekly-report doğruluğu için, bkz. PLATFORM_CONTEXT.md açık
+          karar #19). Yeni bir cost-center kodu (conventions.md §3.1:
+          `^CC-[0-9]{4}$`) talep edin.
+        deny:
+          conditions:
+            all:
+              - key: "{{ length(existingTenants) }}"
+                operator: GreaterThan
+                value: 0

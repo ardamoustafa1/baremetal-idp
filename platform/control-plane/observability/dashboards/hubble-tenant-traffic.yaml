@@ -1,0 +1,115 @@
+# =============================================================================
+# Hubble (Cilium) tenant bazlı ağ trafiği görünürlüğü — Faz 9, görev madde 3.
+#
+# Kaynak metrikler: cilium/values.yaml.tpl'de Faz 9'da genişletilen Hubble
+# metrikleri (dns/drop/tcp/flow artık `labelsContext=source_namespace,
+# destination_namespace` taşıyor — bkz. o dosyanın Faz 9 yorumu). Bu olmadan
+# aşağıdaki sorgular namespace'e göre GRUPLANAMAZ/FİLTRELENEMEZDİ.
+#
+# Bu ConfigMap, diğer tüm dashboard'larla AYNI sidecar mekanizmasıyla
+# (control-plane/observability/values.yaml → sidecar.dashboards,
+# searchNamespace=ALL) otomatik yüklenir — platform-genelinde TEK bir
+# statik dashboard olduğu için (her tenant için ayrı üretilmez, aksine
+# tüm tenant'ları namespace değişkeniyle filtrelenebilir tek ekranda
+# gösterir), bu Composition'ın DEĞİL, control-plane/observability
+# katmanının bir parçası olarak elle tanımlanır.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hubble-tenant-traffic-dashboard
+  namespace: observability
+  labels:
+    platform.internal/layer: observability
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Platform/Network"
+data:
+  hubble-tenant-traffic.json: |
+    {
+      "title": "Hubble — Tenant Ağ Trafiği",
+      "uid": "hubble-tenant-traffic",
+      "tags": ["hubble", "cilium", "tenant", "network"],
+      "timezone": "utc",
+      "schemaVersion": 39,
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "type": "query",
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "query": "label_values(hubble_flows_processed_total, source_namespace)",
+            "includeAll": true,
+            "multi": true,
+            "current": {"text": "All", "value": "$__all"}
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Namespace başına akış hacmi (kaynak)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [{
+            "expr": "sum(rate(hubble_flows_processed_total{source_namespace=~\"$namespace\"}[5m])) by (source_namespace)",
+            "legendFormat": "{{source_namespace}}"
+          }]
+        },
+        {
+          "id": 2,
+          "title": "Namespace-çifti bazlı trafik matrisi (kaynak → hedef)",
+          "type": "table",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [{
+            "expr": "sum(rate(hubble_flows_processed_total{source_namespace=~\"$namespace\"}[5m])) by (source_namespace, destination_namespace)",
+            "format": "table",
+            "instant": true
+          }]
+        },
+        {
+          "id": 3,
+          "title": "Reddedilen (drop) paketler — tenant bazlı",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "description": "Beklenmeyen bir artış, tenant'ın CiliumNetworkPolicy'sinin (bkz. compositions/tenant) izin vermediği bir bağlantı denemesi olabilir — 'servisim X'e ulaşamıyor' teşhisinin temel panelidir (ADR-0001 Karar 2.2 #3).",
+          "targets": [{
+            "expr": "sum(rate(hubble_drop_total{source_namespace=~\"$namespace\"}[5m])) by (source_namespace, reason)",
+            "legendFormat": "{{source_namespace}} ({{reason}})"
+          }]
+        },
+        {
+          "id": 4,
+          "title": "TCP bağlantı durumu — tenant bazlı",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "targets": [{
+            "expr": "sum(rate(hubble_tcp_flags_total{source_namespace=~\"$namespace\"}[5m])) by (source_namespace, flag)",
+            "legendFormat": "{{source_namespace}} ({{flag}})"
+          }]
+        },
+        {
+          "id": 5,
+          "title": "Namespace'ler arası trafik (kaynak → hedef, kendi namespace'i hariç)",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+          "description": "Panel 2'deki matrisin zaman serisi hâli; köşegen (source==destination) hariç tutulmamıştır — PromQL'de iki etiketi doğrudan birbirine eşit-değil olarak karşılaştırmak mümkün olmadığından, tenant-içi trafiği ayırt etmek için legend'daki source/destination çiftine bakın. Tenant'ın networkTier=isolated beklentisiyle TUTARSIZ bir hedef namespace görülmesi, CiliumNetworkPolicy'nin (compositions/tenant) beklenmedik şekilde gevşetildiğine işaret eder.",
+          "targets": [{
+            "expr": "sum(rate(hubble_flows_processed_total{source_namespace=~\"$namespace\", destination_namespace!=\"\"}[5m])) by (source_namespace, destination_namespace)",
+            "legendFormat": "{{source_namespace}} → {{destination_namespace}}"
+          }]
+        },
+        {
+          "id": 6,
+          "title": "DNS sorgu hatası oranı — tenant bazlı",
+          "type": "timeseries",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+          "targets": [{
+            "expr": "sum(rate(hubble_dns_responses_total{source_namespace=~\"$namespace\", rcode!=\"0\"}[5m])) by (source_namespace, rcode)",
+            "legendFormat": "{{source_namespace}} (rcode={{rcode}})"
+          }]
+        }
+      ],
+      "time": {"from": "now-1h", "to": "now"},
+      "refresh": "30s"
+    }

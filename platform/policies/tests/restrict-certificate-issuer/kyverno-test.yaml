@@ -1,0 +1,29 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: restrict-certificate-issuer
+policies:
+  - ../../validation/07-restrict-certificate-issuer.yaml
+resources:
+  - resources.yaml
+results:
+  - policy: restrict-certificate-issuer
+    rule: only-approved-issuers
+    resources: ["good-cluster-issuer"]
+    kind: Certificate
+    result: pass
+  - policy: restrict-certificate-issuer
+    rule: only-approved-issuers
+    resources: ["good-tenant-issuer"]
+    kind: Certificate
+    result: pass
+  - policy: restrict-certificate-issuer
+    rule: only-approved-issuers
+    resources: ["bad-random-clusterissuer"]
+    kind: Certificate
+    result: fail
+  - policy: restrict-certificate-issuer
+    rule: only-approved-issuers
+    resources: ["bad-random-namespaced-issuer"]
+    kind: Certificate
+    result: fail

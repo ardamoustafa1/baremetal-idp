@@ -1,0 +1,17 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Values
+metadata:
+  name: values
+namespaceSelector: []
+policies:
+  - name: enforce-unique-cost-center
+    resources:
+      - name: acme-dev
+        values:
+          existingTenants: []
+      - name: globex-dev
+        values:
+          existingTenants:
+            - teamName: acme
+              namespace: tenant-requests
+              name: acme-dev

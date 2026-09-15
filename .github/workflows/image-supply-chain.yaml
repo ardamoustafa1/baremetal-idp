@@ -1,0 +1,112 @@
+# =============================================================================
+# Yeniden kullanılabilir (workflow_call) imaj tedarik-zinciri iş akışı.
+# Faz 10, görev madde 1 (imza) + madde 4 (SBOM + Trivy zafiyet gate'i).
+#
+# Bu workflow platform reposunun KENDİSİ tarafından değil, Harbor'a imaj
+# push eden HER tenant uygulama reposu tarafından `workflow_call` ile
+# ÇAĞRILIR (bkz. çağıran repo örneği aşağıda) — imaj derleme adımı repo'ya
+# özgü olduğundan burada YOKTUR; bu workflow, "imaj zaten build edildi ve
+# yerel Docker daemon'da mevcut" varsayımıyla SBOM/tarama/imzalama yapar.
+#
+# SIRALAMA (kasıtlı): syft SBOM → trivy gate (KRİTİK/YÜKSEK varsa DUR,
+# imzalama/push'a HİÇ gidilmez) → cosign imzala → Harbor'a push. Taramadan
+# geçmeyen bir imaj İMZALANMAZ BİLE — imzalama, "bu imaj güvenlik
+# kontrolünden geçti" anlamına gelir, yalnızca "bu imaj bizden geldi"
+# değil.
+#
+# KRİTİK: cosign v2.4.1'e SABİTLENMİŞTİR (bkz. platform/policies/tests/
+# require-signed-images/README.md'deki GERÇEK test bulgusu — cosign v3.x'in
+# varsayılan imza formatı Kyverno 1.19.1 tarafından ANLAŞILMIYOR, "latest"
+# kullanmak imzalı imajların sessizce REDDEDİLMESİNE yol açar).
+#
+# Çağıran repo örneği:
+#   jobs:
+#     supply-chain:
+#       uses: <org>/infastruce/.github/workflows/image-supply-chain.yaml@main
+#       with:
+#         image: harbor.apps.platform.internal/my-team/my-app:${{ github.sha }}
+#       secrets:
+#         harbor-username: ${{ secrets.HARBOR_ROBOT_USER }}
+#         harbor-password: ${{ secrets.HARBOR_ROBOT_TOKEN }}
+#         cosign-private-key: ${{ secrets.COSIGN_PRIVATE_KEY }}
+#         cosign-password: ${{ secrets.COSIGN_PASSWORD }}
+# =============================================================================
+name: image-supply-chain
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "Tam nitelikli imaj referansı (harbor.apps.platform.internal/<proje>/<imaj>:<tag>)"
+        required: true
+        type: string
+      severity-gate:
+        description: "Trivy'nin PR/push'u durduracağı zafiyet seviyeleri"
+        required: false
+        type: string
+        default: "HIGH,CRITICAL"
+    secrets:
+      harbor-username:
+        required: true
+      harbor-password:
+        required: true
+      cosign-private-key:
+        required: true
+      cosign-password:
+        required: true
+
+jobs:
+  sbom-scan-sign-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      COSIGN_VERSION: "2.4.1" # BİLEREK v3.x DEĞİL — yukarıdaki KRİTİK notuna bakın
+    steps:
+      - name: Install syft
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Install trivy
+        run: curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Install cosign (pinned v2.4.1, NOT latest)
+        run: |
+          set -euo pipefail
+          curl -fLsS "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64" -o /usr/local/bin/cosign
+          chmod +x /usr/local/bin/cosign
+          [[ "$(cosign version 2>&1 | grep -o 'GitVersion:.*' | awk '{print $2}')" == "v${COSIGN_VERSION}" ]] \
+            || { echo "::error::cosign sürümü beklenenden farklı"; exit 1; }
+
+      - name: syft SBOM üret (SPDX + CycloneDX)
+        run: |
+          syft "${{ inputs.image }}" -o spdx-json > sbom.spdx.json
+          syft "${{ inputs.image }}" -o cyclonedx-json > sbom.cyclonedx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.*.json
+
+      - name: Trivy zafiyet gate'i (KRİTİK/YÜKSEK varsa BURADA DURUR)
+        run: |
+          trivy image \
+            --severity "${{ inputs.severity-gate }}" \
+            --exit-code 1 \
+            --ignore-unfixed=false \
+            "${{ inputs.image }}"
+
+      - name: Harbor'a giriş
+        run: |
+          echo "${{ secrets.harbor-password }}" | docker login \
+            "$(echo '${{ inputs.image }}' | cut -d/ -f1)" \
+            -u "${{ secrets.harbor-username }}" --password-stdin
+
+      - name: cosign ile imzala (yalnızca gate'i GEÇEN imaj)
+        env:
+          COSIGN_PASSWORD: ${{ secrets.cosign-password }}
+        run: |
+          echo "${{ secrets.cosign-private-key }}" > cosign.key
+          cosign sign --key cosign.key --tlog-upload=false --yes "${{ inputs.image }}"
+          rm -f cosign.key
+
+      - name: Harbor'a push
+        run: docker push "${{ inputs.image }}"

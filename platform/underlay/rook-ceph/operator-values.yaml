@@ -1,0 +1,82 @@
+# =============================================================================
+# Rook-Ceph Operator
+# ADR-0001 Consequences #4: yığındaki operasyonel olarak en ağır bileşen.
+# =============================================================================
+
+crds:
+  enabled: true
+
+# 3 node'luk test topolojisinde operator tek replika (HA gerektirmez;
+# yeniden planlanması saniyeler sürer ve veri yolunda değildir).
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 512Mi
+
+# OSD hazırlığı sırasında disk keşfi için gerekli
+enableDiscoveryDaemon: true
+discoveryDaemonInterval: 60m
+
+csi:
+  # RBD (blok) — ceph-block StorageClass bunu kullanır
+  enableRbdDriver: true
+  # CephFS (paylaşımlı/RWX) — conventions §5 "ceph-filesystem"
+  enableCephfsDriver: true
+  # NFS ve gRPC metrikleri bu fazda gerekmiyor
+  enableNFSDriver: false
+
+  # 3 node → provisioner 2 replika (tek node kaybına dayanır, 3. replika israf)
+  provisionerReplicas: 2
+
+  # Faz 4'te kube-prometheus-stack kurulunca açılacak
+  serviceMonitor:
+    enabled: false
+
+  csiRBDProvisionerResource: |
+    - name: csi-provisioner
+      resource:
+        requests: {memory: 128Mi, cpu: 100m}
+        limits: {memory: 256Mi, cpu: 200m}
+    - name: csi-resizer
+      resource:
+        requests: {memory: 128Mi, cpu: 100m}
+        limits: {memory: 256Mi, cpu: 200m}
+    - name: csi-attacher
+      resource:
+        requests: {memory: 128Mi, cpu: 100m}
+        limits: {memory: 256Mi, cpu: 200m}
+    - name: csi-snapshotter
+      resource:
+        requests: {memory: 128Mi, cpu: 100m}
+        limits: {memory: 256Mi, cpu: 200m}
+    - name: csi-rbdplugin
+      resource:
+        requests: {memory: 512Mi, cpu: 250m}
+        limits: {memory: 1Gi, cpu: 500m}
+
+  csiCephFSProvisionerResource: |
+    - name: csi-provisioner
+      resource:
+        requests: {memory: 128Mi, cpu: 100m}
+        limits: {memory: 256Mi, cpu: 200m}
+    - name: csi-resizer
+      resource:
+        requests: {memory: 128Mi, cpu: 100m}
+        limits: {memory: 256Mi, cpu: 200m}
+    - name: csi-attacher
+      resource:
+        requests: {memory: 128Mi, cpu: 100m}
+        limits: {memory: 256Mi, cpu: 200m}
+    - name: csi-cephfsplugin
+      resource:
+        requests: {memory: 512Mi, cpu: 250m}
+        limits: {memory: 1Gi, cpu: 500m}
+
+# Operator log seviyesi. OSD sorunlarını ayıklarken DEBUG'a çekin.
+logLevel: INFO
+
+monitoring:
+  enabled: false   # Faz 4

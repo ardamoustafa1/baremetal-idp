@@ -1,0 +1,132 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: request-postgres
+  title: Yeni Postgres İste
+  description: Kendi tenant'ınız için self-servis bir CloudNativePG instance'ı talep
+    eder — bkz. docs/runbooks/request-postgres.md.
+  tags:
+  - postgresql
+  - database
+  - platform
+  - self-service
+spec:
+  owner: platform-team
+  type: infrastructure
+  parameters:
+  - title: Hedef
+    required:
+    - cluster
+    - repoUrl
+    properties:
+      cluster:
+        type: string
+        enum:
+        - platform
+        default: platform
+      repoUrl:
+        type: string
+        title: İstek reposu
+        ui:field: RepoUrlPicker
+        ui:options:
+          allowedHosts:
+          - github.com
+          allowedRepos:
+          - tenant-requests
+  - title: Postgres Bilgileri
+    required:
+    - name
+    - tenantRef
+    - version
+    properties:
+      name:
+        title: Instance Adı
+        type: string
+        pattern: ^[a-z][a-z0-9-]{1,28}[a-z0-9]$
+        ui:help: 'Örnek: orders-db. Service adları buradan türetilir (örn. orders-db-rw).'
+      tenantRef:
+        title: Tenant Namespace'iniz
+        type: string
+        pattern: ^tenant-[a-z][a-z0-9-]{1,28}[a-z0-9]-(dev|staging|prod)$
+        ui:help: KENDİ tenant namespace'iniz (örn. tenant-acme-dev) — bir Tenant claim
+          adı DEĞİL. "kubectl get xtenant" ile bulabilirsiniz.
+      version:
+        title: PostgreSQL Sürümü
+        type: string
+        enum:
+        - '14'
+        - '15'
+        - '16'
+        - '17'
+        default: '16'
+  - title: Boyut ve Kullanılabilirlik
+    required:
+    - size
+    - highAvailability
+    properties:
+      size:
+        title: Boyut (size)
+        type: string
+        enum:
+        - small
+        - medium
+        - large
+        enumNames:
+        - small — 1 replika / 2 CPU / 4Gi / 20Gi
+        - medium — 2 replika / 4 CPU / 8Gi / 100Gi
+        - large — 3 replika / 8 CPU / 16Gi / 500Gi
+      highAvailability:
+        title: Yüksek Kullanılabilirlik (HA)
+        type: boolean
+        default: false
+        description: ⚠️ true iken size=small SEÇİLEMEZ (minimum 2 replika gerekir
+          — hem form hem composition bunu reddeder).
+    allOf:
+    - if:
+        properties:
+          highAvailability:
+            const: true
+      then:
+        properties:
+          size:
+            enum:
+            - medium
+            - large
+  steps:
+  - id: fetch
+    name: Şablonu doldur
+    action: fetch:template
+    input:
+      url: ./skeleton
+      values:
+        name: ${{ parameters.name }}
+        tenantRef: ${{ parameters.tenantRef }}
+        size: ${{ parameters.size }}
+        version: ${{ parameters.version }}
+        highAvailability: ${{ parameters.highAvailability }}
+        cluster: ${{ parameters.cluster }}
+  - id: publish
+    name: tenant-requests reposuna PR aç
+    action: publish:github:pull-request
+    input:
+      repoUrl: ${{ parameters.repoUrl }}
+      branchName: request-${{ parameters.cluster }}-${{ parameters.name }}
+      title: 'Yeni Postgres: ${{ parameters.name }} (${{ parameters.tenantRef }})'
+      description: '**Instance:** ${{ parameters.name }}
+
+        **Tenant:** ${{ parameters.tenantRef }}
+
+        **Boyut:** ${{ parameters.size }} · **HA:** ${{ parameters.highAvailability
+        }}
+
+        **Sürüm:** PostgreSQL ${{ parameters.version }}
+
+        --- Bu PR, Backstage "Yeni Postgres İste" şablonuyla otomatik açıldı. Hazır
+        olma süresi ve bağlantı bilgisi: docs/runbooks/request-postgres.md'
+      targetBranchName: main
+  output:
+    links:
+    - title: Açılan PR'ı görüntüle
+      url: ${{ steps.publish.output.remoteUrl }}
+    - title: PR numarası
+      text: ${{ steps.publish.output.pullRequestNumber }}

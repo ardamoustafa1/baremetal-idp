@@ -1,0 +1,10 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: UserInfo
+metadata:
+  name: crossplane-provider
+userInfo:
+  # Faz 2'de rastgele üretilen provider-kubernetes SA'sının TEMSİLİ adı
+  username: "system:serviceaccount:crossplane-system:provider-kubernetes-abc123"
+  groups:
+    - system:serviceaccounts
+    - system:serviceaccounts:crossplane-system

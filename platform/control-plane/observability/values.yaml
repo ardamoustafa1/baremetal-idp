@@ -1,0 +1,141 @@
+# =============================================================================
+# kube-prometheus-stack — Prometheus + Alertmanager + Grafana + exporters
+# Faz 9. ADR-0001 L4.
+#
+# Grafana admin parolası BURADA YOK — 05-observability.sh, .env'den bir
+# Secret üretir (`existingSecret`). Alertmanager webhook URL'i de aynı
+# şekilde .env'den bir Secret'a yazılır (Slack/Teams webhook'unu Git'e
+# YAZMAMAK için).
+# =============================================================================
+
+# --- Prometheus ---------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    replicas: 1                     # 3 node test topolojisi; Faz 9.5+ HA (2) değerlendirilir
+    retention: 15d
+    resources:
+      requests: {cpu: 500m, memory: 1Gi}
+      limits:   {cpu: 1000m, memory: 2Gi}
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ceph-block
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests: {storage: 50Gi}
+    # Kyverno/Cilium/CNPG gibi bileşenlerin ürettiği TÜM ServiceMonitor'ları
+    # namespace sınırı olmadan seçer — release etiketi zaten platform-genel
+    # bir kimlik doğrulama sınırı olarak yeterli (Kyverno guardrail'leri
+    # bunun ötesini denetler).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    # cert-manager, Hubble/Cilium gibi kube-prometheus-stack'in KENDİ
+    # release'i DIŞINDA etiketlenmiş ServiceMonitor'ları da seçer.
+    serviceMonitorSelector: {}
+    podMonitorSelector: {}
+    ruleSelector: {}
+    # Uzak yazma YOK (Faz 9'da Thanos/uzun-vade depolama kapsam dışı).
+    additionalScrapeConfigs: []
+
+# --- Alertmanager ---------------------------------------------------------
+alertmanager:
+  alertmanagerSpec:
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits:   {cpu: 200m, memory: 256Mi}
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: ceph-block
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests: {storage: 5Gi}
+  # Statik konfigürasyon BURADA YOK — 05-observability.sh, .env'deki
+  # ALERTMANAGER_WEBHOOK_URL'den bir Secret üretip alertmanagerSpec.
+  # alertmanagerConfigSecret üzerinden bağlar (aşağıda, DIŞARIDAN override).
+  # values.yaml'da yalnızca resources/depolama; routing config
+  # resources/alertmanager-config-secret.yaml.tpl'DE (render edilip
+  # script'çe uygulanır).
+
+# --- Grafana ---------------------------------------------------------------
+grafana:
+  replicas: 1
+  admin:
+    existingSecret: grafana-admin-credentials
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:
+    enabled: true
+    storageClassName: ceph-block
+    size: 5Gi
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: 200m, memory: 512Mi}
+
+  # --- Dashboard/folder sidecar — Tenant composition'ının ürettiği
+  # ConfigMap'leri (label: grafana_dashboard=1) OTOMATİK yükler (item 2'nin
+  # "otomatik Grafana klasörü + dashboard" kabul kriterinin GERÇEK mekanizması).
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      # Her ConfigMap'in bu annotation'ı, dashboard'un HANGİ klasöre
+      # gideceğini belirler — compositions/tenant/function.k bunu
+      # "tenant-<teamName>-<environment>" olarak ayarlıyor.
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: false
+      searchNamespace: ALL
+    datasources:
+      enabled: true
+      label: grafana_datasource
+      labelValue: "1"
+      searchNamespace: ALL
+
+  # --- Datasource'lar: Prometheus (bundled) + Loki + Tempo (ayrı chart'lar,
+  # bu yüzden ConfigMap ile EK datasource olarak tanımlanıyor)
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      access: proxy
+      url: http://loki-gateway.observability.svc.cluster.local:80
+      jsonData:
+        maxLines: 1000
+    - name: Tempo
+      type: tempo
+      access: proxy
+      url: http://tempo.observability.svc.cluster.local:3100
+      jsonData:
+        tracesToLogsV2:
+          datasourceUid: loki
+        serviceMap:
+          datasourceUid: prometheus
+
+  ingress:
+    enabled: false   # Gateway API + TLS — Faz 3 deseni, ayrı bir HTTPRoute'ta
+
+# --- Node/kube-state metrikleri (varsayılan açık, boyut ayarı 3-node için) --
+nodeExporter:
+  enabled: true
+kubeStateMetrics:
+  enabled: true
+
+# --- Bileşen bazlı kapatmalar (bare-metal'de anlamsız/erişilemez) -----------
+kubeControllerManager:
+  enabled: true   # kubeadm control-plane node'unda metrics endpoint açık olmalı
+kubeScheduler:
+  enabled: true
+kubeEtcd:
+  enabled: true
+kubeProxy:
+  enabled: false  # ADR-0001 Karar 2.2 — kube-proxy KULLANILMIYOR (Cilium replacement)
+
+defaultRules:
+  create: true
+  rules:
+    # Etcd/kube-proxy'ye özgü hazır kural setleri kapatıldı — kube-proxy yok,
+    # etcd kuralları kubeadm'in kendi etcd exportuna göre ayrıca doğrulanmalı.
+    kubeProxy: false

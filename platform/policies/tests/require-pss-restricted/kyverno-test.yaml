@@ -1,0 +1,29 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-pss-restricted
+policies:
+  - ../../validation/08-require-pss-restricted.yaml
+resources:
+  - resources.yaml
+results:
+  - policy: require-pss-restricted
+    rule: require-restricted-labels
+    resources: ["tenant-acme-dev"]
+    kind: Namespace
+    result: pass
+  - policy: require-pss-restricted
+    rule: require-restricted-labels
+    resources: ["tenant-broken-no-pss"]
+    kind: Namespace
+    result: fail
+  - policy: require-pss-restricted
+    rule: require-restricted-labels
+    resources: ["tenant-broken-wrong-profile"]
+    kind: Namespace
+    result: fail
+  - policy: require-pss-restricted
+    rule: require-restricted-labels
+    resources: ["argocd"]
+    kind: Namespace
+    result: skip

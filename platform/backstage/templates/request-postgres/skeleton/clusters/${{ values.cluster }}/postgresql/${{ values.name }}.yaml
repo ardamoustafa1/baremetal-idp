@@ -1,0 +1,10 @@
+apiVersion: platform.internal/v1alpha1
+kind: PostgreSQLInstance
+metadata:
+  name: ${{ values.name }}
+  namespace: tenant-requests
+spec:
+  size: ${{ values.size }}
+  version: "${{ values.version }}"
+  highAvailability: ${{ values.highAvailability }}
+  tenantRef: ${{ values.tenantRef }}

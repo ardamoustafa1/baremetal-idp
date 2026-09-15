@@ -1,0 +1,67 @@
+# =============================================================================
+# (b) privileged / hostNetwork pod yasağı
+#
+# policies/README.md: Audit modunda başlar; Enforce'a geçiş ayrı PR.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged-hostnetwork
+  annotations:
+    policies.kyverno.io/title: Disallow Privileged and HostNetwork Pods
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      privileged: true ve hostNetwork: true, konteynerı ana makineyle aynı
+      ayrıcalık/ağ alanına koyar; tenant izolasyonunu (ADR-0001 Karar 2.2)
+      tamamen atlar. Yalnızca ana makine düzeyinde çalışması GEREKEN platform
+      DaemonSet'leri (CNI, MetalLB speaker, Ceph OSD hazırlığı) muaftır.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: no-privileged-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          # Cilium (kube-system) ve Ceph OSD hazırlığı (rook-ceph) ham disk/ağ
+          # erişimi için privileged GEREKTİRİR. MetalLB speaker de kube-system
+          # dışında (metallb-system) host ağına ihtiyaç duyar.
+          - resources:
+              namespaces:
+                - kube-system
+                - rook-ceph
+                - metallb-system
+      validate:
+        message: >-
+          privileged: true yasaktır. Tenant namespace'lerinde İSTİSNASIZ.
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              =(securityContext):
+                =(privileged): "false"
+
+    - name: no-host-network
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          # CNI ve MetalLB speaker'ın kendisi host ağını kullanmak ZORUNDA.
+          - resources:
+              namespaces:
+                - kube-system
+                - metallb-system
+      validate:
+        message: >-
+          hostNetwork: true yasaktır. Tenant namespace'lerinde İSTİSNASIZ.
+        pattern:
+          spec:
+            =(hostNetwork): "false"

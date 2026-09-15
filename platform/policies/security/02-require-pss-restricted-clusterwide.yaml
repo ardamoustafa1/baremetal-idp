@@ -1,0 +1,126 @@
+# =============================================================================
+# Pod Security Standards "restricted" — CLUSTER GENELİNDE varsayılan.
+# Faz 10, görev madde 2 (Faz 6b/08'de yalnızca tenant-* için başlanmıştı).
+#
+# İKİ KATMANLI SAVUNMA (defense-in-depth), İKİSİ DE GEREKLİ:
+#
+#   1. `pod-security-admission-configuration.yaml` — kube-apiserver'ın
+#      KENDİ yerleşik Pod Security Admission kontrolcüsüne, etiketlenmemiş
+#      HER YENİ namespace için varsayılanın "restricted" olduğunu söyler
+#      (bkz. o dosyanın kubeadm wiring notu). Bu, GERÇEK admission-time
+#      zorlamadır — Kyverno'nun webhook'undan ÖNCE, apiserver'ın kendi
+#      içinde çalışır.
+#   2. BU dosya (Kyverno ClusterPolicy) — #1'in kubeadm ClusterConfiguration
+#      seviyesinde GERÇEKTEN uygulandığını (bir operatör yanlışlıkla
+#      apiserver flag'ini kaldırırsa/değiştirirse) İKİNCİ, BAĞIMSIZ bir
+#      katmanla doğrular: her namespace'in (istisna listesindekiler hariç)
+#      3 PSS etiketini GERÇEKTEN taşıdığını kontrol eder. #1 olmadan bile
+#      bu politika TEK BAŞINA yeterlidir (etiket yoksa admission reddedilir)
+#      — ama #1, Kyverno webhook'u geçici olarak devre dışıysa/çöktüyse
+#      bile korumanın DEVAM etmesini sağlar.
+#
+# 08 (require-pss-restricted, yalnızca tenant-*) ile İLİŞKİ: bu politika
+# ONU DEĞİŞTİRMEZ, ONA EK bir kapsam genişletmesidir — 08 tenant-*'a özel
+# ekstra bir netlik/hata mesajı sağladığı için ayrı bırakıldı; bu dosya
+# TÜM DİĞER namespace'leri (platform sistemi hariç) kapsar.
+#
+# İSTİSNA SÜRECİ: bkz. platform/policies/security/README.md
+# "PSS istisna süreci" bölümü. Özet: bir namespace, Kyverno PolicyException
+# (CEL değil, klasik) CR'ı ile ELLE istisna alabilir — ama CR'ın KENDİSİ
+# `platform.internal/pss-exception-justification` ve
+# `platform.internal/pss-exception-approved-by` annotation'larını
+# TAŞIMIYORSA bu policy'nin `check-exception-has-justification` kuralı
+# İSTİSNAYI DA REDDEDER (gerekçesiz istisna oluşturulamaz).
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pss-restricted-clusterwide
+  annotations:
+    policies.kyverno.io/title: Require Pod Security Standards "restricted" (cluster-wide)
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Platform sistemi namespace'leri HARİÇ, cluster'daki HER namespace
+      "restricted" Pod Security Standards etiketlerini taşımalıdır.
+      İstisnalar yalnızca gerekçeli bir PolicyException ile mümkündür.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-restricted-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+      # NOT: bu liste, kubeadm/Cilium/Rook/ArgoCD/Crossplane/Kyverno/ESO/
+      # Vault/cert-manager/Harbor/Keycloak/observability/opencost/backstage
+      # namespace'lerinin TAMAMINI kapsar — bu bileşenlerin bazıları
+      # (özellikle Cilium'un kendi eklentileri, Rook OSD pod'ları) kök
+      # ayrıcalığı/hostPath/hostNetwork gerektirdiği için "restricted"
+      # profiliyle ÇALIŞAMAZ. Yeni bir platform bileşeni eklendiğinde bu
+      # listeye MANUEL olarak eklenmesi gerekir (otomatik keşif YOK) —
+      # bilinçli bir tasarım: sessizce genişleyen bir istisna listesi,
+      # PR review'da GÖRÜNÜR olmalıdır.
+      exclude:
+        any:
+          - resources:
+              names:
+                - kube-system
+                - kube-node-lease
+                - kube-public
+                - default
+                - cilium
+                - metallb-system
+                - rook-ceph
+                - argocd
+                - crossplane-system
+                - kyverno
+                - external-secrets
+                - vault
+                - vault-unseal
+                - cert-manager
+                - harbor
+                - keycloak
+                - observability
+                - opencost
+                - backstage
+                - pki-test
+                - observability-cert-alert-test
+      validate:
+        message: >-
+          Bu namespace "pod-security.kubernetes.io/{enforce,audit,warn}: restricted"
+          etiketlerini taşımalıdır (cluster-genelinde zorunlu varsayılan,
+          Faz 10). Platform bileşeni namespace'i iseniz `exclude` listesine
+          eklenmeli (PR review gerektirir); tenant/uygulama namespace'iyseniz
+          etiketleri ekleyin veya gerekçeli bir PolicyException açın —
+          bkz. platform/policies/security/README.md.
+        pattern:
+          metadata:
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/audit: restricted
+              pod-security.kubernetes.io/warn: restricted
+
+    - name: exceptions-require-justification
+      match:
+        any:
+          - resources:
+              kinds:
+                - PolicyException
+      validate:
+        message: >-
+          Bu policy'ye (require-pss-restricted-clusterwide) yönelik HER
+          PolicyException, gerekçe VE onaylayan bilgisi taşımalıdır —
+          bkz. README.md "PSS istisna süreci".
+        deny:
+          conditions:
+            all:
+              - key: "{{ contains(request.object.spec.exceptions[].policyName, 'require-pss-restricted-clusterwide') }}"
+                operator: Equals
+                value: true
+              - key: "{{ request.object.metadata.annotations.\"platform.internal/pss-exception-justification\" || '' }}"
+                operator: Equals
+                value: ""

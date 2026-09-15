@@ -1,0 +1,47 @@
+# =============================================================================
+# cert-manager — Vault-backed ClusterIssuer'ların çalışma zamanı
+# =============================================================================
+
+installCRDs: true
+
+replicaCount: 1              # 3 node test topolojisi; Faz 4+ HA (2-3) değerlendirilir
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  limits:   {cpu: 200m, memory: 512Mi}
+
+webhook:
+  replicaCount: 1
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits:   {cpu: 100m, memory: 256Mi}
+
+cainjector:
+  replicaCount: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: 200m, memory: 512Mi}
+
+# --- Prometheus metrikleri: ServiceMonitor'ı BURADAN DEĞİL, ayrı bir statik
+# manifestten (servicemonitor.yaml) uyguluyoruz. Neden: chart'ın kendi
+# `prometheus.servicemonitor.enabled=true` değeri, Prometheus Operator CRD'si
+# (monitoring.coreos.com/v1) kümede YOKSA Helm/ArgoCD sync'ini BAŞARISIZ
+# yapar (CRD bulunamadı). Bu chart bayrağını false bırakıp, ServiceMonitor'ı
+# script'te CRD varlığı kontrol edilerek koşullu uyguluyoruz.
+prometheus:
+  enabled: true              # /metrics endpoint'i açık (metrik toplama YOK, yalnızca sunma)
+  servicemonitor:
+    enabled: false            # bkz. yukarıdaki not — servicemonitor.yaml ayrı uygulanır
+
+# --- Vault ile iletişim: küme içi, plaintext (bkz. pki/vault/README.md
+# "Vault'un kendi TLS'i"). cert-manager'ın kendisi TLS doğrulaması
+# yapmıyor çünkü hedef HTTP; bu satır yalnızca gelecekte TLS açıldığında
+# CA bundle enjekte edilecek yeri işaretler.
+# extraArgs:
+#   - --vault-ca-cert=/etc/cert-manager/vault-ca/ca.crt   # Vault TLS açılınca
+
+featureGates: ""
+
+serviceAccount:
+  create: true
+  name: cert-manager    # ClusterIssuer'ların serviceAccountRef'i bu adı kullanır

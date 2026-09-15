@@ -1,0 +1,55 @@
+# =============================================================================
+# ProviderConfig'ler — HİÇBİRİ STATİK KİMLİK BİLGİSİ KULLANMIYOR
+#
+# sync-wave "2": Provider'ların (wave "1") kendi ProviderConfig CRD'lerini
+# (örn. providerconfigs.kubernetes.crossplane.io) REGISTER ETMESİNDEN SONRA
+# uygulanır. Provider CR'ı "Installed=True" olsa bile CRD'nin kayda geçmesi
+# birkaç saniye sürebilir — bu yüzden ayrı bir wave, tek wave değil.
+#
+# ArgoCD'nin bu ilerlemeyi GERÇEKTEN bekleyebilmesi için provider'ların
+# health durumu özel bir Lua check ile tanımlı olmalı:
+#   platform/control-plane/argocd/values.yaml → resource.customizations.health
+# =============================================================================
+
+# --- provider-kubernetes: in-cluster, ServiceAccount token ------------------
+# Statik kubeconfig/token YOK. Pod'un kendi ServiceAccount'ının projected
+# token'ı kullanılır (aynı mekanizma, herhangi bir in-cluster client'ın
+# kullandığı ile birebir aynı).
+apiVersion: kubernetes.crossplane.io/v1alpha1
+kind: ProviderConfig
+metadata:
+  name: in-cluster
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  credentials:
+    source: InjectedIdentity
+---
+# --- provider-helm: in-cluster, aynı mekanizma ------------------------------
+apiVersion: helm.crossplane.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: in-cluster
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  credentials:
+    source: InjectedIdentity
+---
+# --- provider-terraform: ESCAPE HATCH, kimlik bilgisi YOK -------------------
+# `credentials: []` bilinçlidir: bu ortamda bir bulut sağlayıcı yok, dolayısıyla
+# imzalanacak/kullanılacak bir statik API anahtarı da yok. İleride bir Terraform
+# modülünün kimlik bilgisine ihtiyacı olursa (örn. DNS sağlayıcı API'si):
+#   1. Vault'ta bir secret olarak saklanır (ADR-0001 Karar 2.3)
+#   2. ESO onu bir Kubernetes Secret'a yansıtır (Faz 3+)
+#   3. Bu ProviderConfig'e `credentials: [{filename: ..., source: Secret,
+#      secretRef: {...}}]` olarak eklenir
+# Hiçbir zaman elle/statik girilmez.
+apiVersion: tf.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  credentials: []

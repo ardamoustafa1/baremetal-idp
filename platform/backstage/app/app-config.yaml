@@ -1,0 +1,103 @@
+app:
+  title: Platform Developer Portal
+  baseUrl: https://backstage.${PLATFORM_BASE_DOMAIN}
+organization:
+  name: Platform
+backend:
+  baseUrl: https://backstage.${PLATFORM_BASE_DOMAIN}
+  listen:
+    port: 7007
+  csp:
+    connect-src:
+    - '''self'''
+    - 'http:'
+    - 'https:'
+  cors:
+    origin: https://backstage.${PLATFORM_BASE_DOMAIN}
+  database:
+    client: pg
+    connection:
+      host: ${BACKSTAGE_DB_HOST}
+      port: ${BACKSTAGE_DB_PORT}
+      user: ${BACKSTAGE_DB_USER}
+      password: ${BACKSTAGE_DB_PASSWORD}
+      database: backstage
+auth:
+  environment: production
+  providers:
+    oidc:
+      production:
+        metadataUrl: https://${KEYCLOAK_HOSTNAME}/realms/${KEYCLOAK_REALM}/.well-known/openid-configuration
+        clientId: backstage
+        clientSecret: ${BACKSTAGE_OIDC_CLIENT_SECRET}
+        prompt: auto
+        signIn:
+          resolvers:
+          - resolver: emailMatchingUserEntityProfileEmail
+  session:
+    secret: ${AUTH_SESSION_SECRET}
+catalog:
+  rules:
+  - allow:
+    - Component
+    - System
+    - API
+    - Resource
+    - Location
+    - Group
+    - User
+    - Template
+  locations:
+  - type: file
+    target: /app/catalog/organization.yaml
+  - type: file
+    target: /app/catalog/platform-components.yaml
+  - type: file
+    target: /app/templates/create-tenant/template.yaml
+    rules:
+    - allow:
+      - Template
+  - type: file
+    target: /app/templates/request-postgres/template.yaml
+    rules:
+    - allow:
+      - Template
+  - type: file
+    target: /app/catalog/users.yaml
+kubernetes:
+  serviceLocatorMethod:
+    type: multiTenant
+  clusterLocatorMethods:
+  - type: config
+    clusters:
+    - name: platform
+      url: https://kubernetes.default.svc
+      authProvider: serviceAccount
+      skipTLSVerify: false
+      skipMetricsLookup: true
+  customResources:
+  - group: platform.internal
+    apiVersion: v1alpha1
+    plural: tenants
+  - group: platform.internal
+    apiVersion: v1alpha1
+    plural: postgresqlinstances
+  - group: postgresql.cnpg.io
+    apiVersion: v1
+    plural: clusters
+  - group: platform.internal
+    apiVersion: v1alpha1
+    plural: xtenants
+  - group: platform.internal
+    apiVersion: v1alpha1
+    plural: xpostgresqlinstances
+integrations:
+  github:
+  - host: github.com
+    token: ${BACKSTAGE_GITHUB_TOKEN}
+scaffolder:
+  defaultAuthor:
+    name: platform-scaffolder-bot
+    email: platform-bot@example.internal
+platformCatalog:
+  enabled: true

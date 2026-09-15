@@ -1,0 +1,25 @@
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: acme-dev
+  namespace: tenant-requests
+spec:
+  teamName: acme
+  costCenter: "CC-1042"
+  environment: dev
+  networkTier: isolated
+  quotaTier: small
+  oidcGroup: tenant-acme
+---
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: globex-dev
+  namespace: tenant-requests
+spec:
+  teamName: globex
+  costCenter: "CC-1042"
+  environment: dev
+  networkTier: isolated
+  quotaTier: small
+  oidcGroup: tenant-globex

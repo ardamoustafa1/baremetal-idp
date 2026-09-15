@@ -1,0 +1,97 @@
+# =============================================================================
+# DÜZELTME (Faz 12c, GERÇEK bir kind cluster'ında keşfedildi): bu politika
+# ÖNCEDEN `operations` alanını hiç kısıtlamıyordu — bu, Kubernetes'in KENDİ
+# namespace garbage collector'ının (tenant namespace silinirken tenant-quota/
+# tenant-limits'i temizlemeye ÇALIŞAN) DELETE isteğinin de reddedilmesine
+# yol açıyordu ("system:serviceaccount:crossplane-system:" ile BAŞLAMIYOR"
+# koşulu GC'nin kendi kimliğini de yakalıyordu). SONUÇ: bir tenant
+# namespace'i SİLİNEMEZ HALE geliyordu — `kubectl delete namespace` SONSUZA
+# KADAR "Terminating" durumunda TAKILI KALIYORDU (canlı doğrulandı:
+# `NamespaceDeletionContentFailure` — bu policy tarafından bloke edildi).
+# Politikanın kendi amacı (elle BÜYÜTME/DÜZENLEME'yi engellemek) DELETE'i
+# değil yalnızca CREATE/UPDATE'i kapsamalı — Crossplane zaten silinen bir
+# nesneyi bir sonraki reconcile'da YENİDEN OLUŞTURUR, bu yüzden DELETE'i
+# engellemenin gerçek bir güvenlik FAYDASI da yok, yalnızca namespace
+# yaşam döngüsünü KIRIYORDU.
+#
+# (2) quotaTier bypass koruması
+#
+# XRD (compositions/tenant/xrd.yaml) `quotaTier` alanını zaten enum
+# (small/medium/large) ile kısıtlıyor — bu, claim SEVİYESİNDE bir korumadır.
+# Ama bir kullanıcının kotayı aşmasının GERÇEK yolu claim'i değiştirmek
+# değil, composition'ın ürettiği `ResourceQuota`/`LimitRange` nesnesini
+# DOĞRUDAN elle büyütmektir (`kubectl edit resourcequota tenant-quota -n
+# tenant-acme-dev`). Bu politika TAM OLARAK BUNU engeller: `tenant-quota`
+# ve `tenant-limits` adlı nesneler yalnızca Crossplane'in kendi
+# ServiceAccount'ı (provider-kubernetes, Faz 2) tarafından yazılabilir.
+#
+# `starts_with` ile prefix eşleşmesi kullanılıyor çünkü provider-kubernetes'in
+# ServiceAccount adı kurulumda RASTGELE üretilir (Faz 2/Faz 6), tam adı
+# elle yazılamaz.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: protect-tenant-resourcequota
+  annotations:
+    policies.kyverno.io/title: Protect Tenant ResourceQuota and LimitRange
+    policies.kyverno.io/category: Multi-Tenancy / Resource Management
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: ResourceQuota, LimitRange
+    policies.kyverno.io/description: >-
+      tenant-quota ve tenant-limits nesneleri yalnızca XTenant composition'ı
+      (Crossplane provider-kubernetes) tarafından yazılabilir — quotaTier
+      sınırlarının elle atlatılmasını (bypass) engeller.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: block-manual-quota-edits
+      match:
+        any:
+          - resources:
+              kinds:
+                - ResourceQuota
+              names:
+                - "tenant-quota"
+              namespaces:
+                - "tenant-*"
+              operations:
+                - CREATE
+                - UPDATE
+      validate:
+        message: >-
+          'tenant-quota', yalnızca XTenant composition'ı tarafından yönetilir.
+          Kotayı değiştirmek için Tenant claim'inizin quotaTier alanını
+          güncelleyin (tenant-requests reposunda bir PR ile) — elle
+          düzenleme yasaktır.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:crossplane-system:') }}"
+                operator: Equals
+                value: false
+
+    - name: block-manual-limitrange-edits
+      match:
+        any:
+          - resources:
+              kinds:
+                - LimitRange
+              names:
+                - "tenant-limits"
+              namespaces:
+                - "tenant-*"
+              operations:
+                - CREATE
+                - UPDATE
+      validate:
+        message: >-
+          'tenant-limits', yalnızca XTenant composition'ı tarafından
+          yönetilir. Elle düzenleme yasaktır.
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:crossplane-system:') }}"
+                operator: Equals
+                value: false

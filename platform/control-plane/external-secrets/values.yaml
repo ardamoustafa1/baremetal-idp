@@ -1,0 +1,35 @@
+# =============================================================================
+# External Secrets Operator — YALNIZCA operatör
+#
+# SecretStore / ClusterSecretStore burada YOK. Vault (Faz 3) hazır olmadan
+# bağlanacak bir yer yok. ADR-0001 Karar 2.3: "ESO, Vault'u kümeye tek yönlü
+# yansıtır" — ama henüz yansıtılacak bir Vault çalışmıyor.
+# =============================================================================
+
+replicaCount: 1               # 3 node test topolojisi
+
+installCRDs: true
+
+webhook:
+  replicaCount: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits:   {cpu: 100m, memory: 128Mi}
+
+certController:
+  replicaCount: 1
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits:   {cpu: 100m, memory: 128Mi}
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits:   {cpu: 200m, memory: 256Mi}
+
+serviceMonitor:
+  enabled: false             # Faz 4'te kube-prometheus-stack kurulunca
+
+# Faz 3'te buraya SecretStore/ClusterSecretStore EKLENMEYECEK — ayrı bir
+# dosyada (platform/control-plane/external-secrets/secretstore-vault.yaml) tanımlanacak,
+# böylece "yalnızca operator" ile "Vault'a bağlı" arasındaki sınır Git
+# geçmişinde açıkça görünür kalır.

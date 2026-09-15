@@ -1,0 +1,80 @@
+# =============================================================================
+# cert-manager sertifika süre dolumu — kademeli uyarı (30/7/1 gün)
+#
+# Metrik: certmanager_certificate_expiration_timestamp_seconds (cert-manager
+# controller'ın kendi /metrics endpoint'i — Faz 3'te ServiceMonitor zaten
+# hazırlanmıştı, `03-pki.sh`'in ServiceMonitor CRD kontrolü artık BAŞARILI
+# olacak çünkü kube-prometheus-stack bu CRD'yi sağlıyor).
+#
+# `for:` süreleri KISA TUTULDU (5m) — bu bir "spike" değil, günler süren
+# yavaş bir durum; asıl amaç FLAP önlemek değil, metrik geçici olarak
+# okunamadığında (örn. cert-manager restart) yanlış alarm ÇALMAMAKTIR.
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cert-manager-expiry
+  namespace: cert-manager
+  labels:
+    platform.internal/layer: observability
+    release: kube-prometheus-stack   # Prometheus'un ruleSelector'ıyla eşleşir
+spec:
+  groups:
+    - name: cert-manager-expiry
+      rules:
+        - alert: CertificateExpiringIn30Days
+          expr: >-
+            (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 < 30
+            and
+            (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 >= 7
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Sertifika 30 gün içinde dolacak: {{ $labels.name }}/{{ $labels.namespace }}"
+            description: >-
+              Certificate {{ $labels.namespace }}/{{ $labels.name }}
+              yaklaşık {{ $value | humanizeDuration }} sonra dolacak.
+              cert-manager otomatik yenilemeliydi — yenileme başarısız
+              olmuş olabilir: `kubectl describe certificate {{ $labels.name }} -n {{ $labels.namespace }}`
+
+        - alert: CertificateExpiringIn7Days
+          expr: >-
+            (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 < 7
+            and
+            (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 >= 1
+          for: 5m
+          labels:
+            severity: high
+          annotations:
+            summary: "⚠️ Sertifika 7 gün içinde dolacak: {{ $labels.name }}/{{ $labels.namespace }}"
+            description: >-
+              Certificate {{ $labels.namespace }}/{{ $labels.name }}
+              yaklaşık {{ $value | humanizeDuration }} sonra dolacak. ACİL müdahale gerekebilir.
+
+        - alert: CertificateExpiringIn1Day
+          expr: >-
+            (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 < 1
+            and
+            (certmanager_certificate_expiration_timestamp_seconds - time()) >= 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "🚨 Sertifika 24 SAAT İÇİNDE DOLACAK: {{ $labels.name }}/{{ $labels.namespace }}"
+            description: >-
+              Certificate {{ $labels.namespace }}/{{ $labels.name }}
+              1 günden AZ bir sürede dolacak. Servis kesintisi RİSKİ yüksek —
+              hemen `kubectl describe certificate {{ $labels.name }} -n {{ $labels.namespace }}`
+              ve Vault/cert-manager loglarını kontrol edin.
+
+        - alert: CertificateAlreadyExpired
+          expr: (certmanager_certificate_expiration_timestamp_seconds - time()) < 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "🚨🚨 Sertifika ZATEN DOLDU: {{ $labels.name }}/{{ $labels.namespace }}"
+            description: >-
+              Certificate {{ $labels.namespace }}/{{ $labels.name }}
+              SÜRESİ DOLDU. TLS handshake'leri şu an başarısız oluyor olabilir.

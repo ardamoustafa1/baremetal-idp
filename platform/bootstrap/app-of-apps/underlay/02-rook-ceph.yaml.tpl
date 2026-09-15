@@ -1,0 +1,95 @@
+# sync-wave 3 — Rook operator
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: underlay-rook-operator
+  namespace: argocd
+  labels:
+    platform.internal/layer: underlay
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    - repoURL: "${ROOK_HELM_REPO}"
+      chart: rook-ceph
+      targetRevision: "${ROOK_CHART_VERSION}"
+      helm:
+        releaseName: rook-ceph
+        valueFiles:
+          - $values/platform/underlay/rook-ceph/operator-values.yaml
+    - repoURL: "${PLATFORM_REPO_URL}"
+      targetRevision: "${PLATFORM_REPO_REVISION}"
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rook-ceph
+  syncPolicy:
+    automated:
+      prune: false      # CRD prune'u veri kaybı riski
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true
+      - SkipDryRunOnMissingResource=true
+---
+# sync-wave 4 — Ceph cluster + havuzlar + StorageClass + ObjectStore
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: underlay-rook-cluster
+  namespace: argocd
+  labels:
+    platform.internal/layer: underlay
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
+spec:
+  project: platform
+  source:
+    repoURL: "${PLATFORM_REPO_URL}"
+    targetRevision: "${PLATFORM_REPO_REVISION}"
+    path: platform/underlay/rook-ceph/rendered
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rook-ceph
+  syncPolicy:
+    automated:
+      prune: false      # CephCluster prune = VERİ KAYBI. Silme bilinçli olmalı.
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 10         # OSD hazırlığı uzun sürer
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 10m
+---
+# sync-wave 5 — StorageClass'lar (CephCluster hazır olduktan sonra)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: underlay-storage-classes
+  namespace: argocd
+  labels:
+    platform.internal/layer: underlay
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+spec:
+  project: platform
+  source:
+    repoURL: "${PLATFORM_REPO_URL}"
+    targetRevision: "${PLATFORM_REPO_REVISION}"
+    path: platform/underlay/storage-classes/rendered
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rook-ceph
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

@@ -1,0 +1,46 @@
+# =============================================================================
+# (5) Pod Security Standards "restricted" — her tenant namespace'inde zorunlu
+#
+# NOT: compositions/tenant/function.k GÜNCELLENDİ (bu görev kapsamında) ve
+# artık her tenant Namespace'ine bu 3 etiketi otomatik ekliyor — aksi halde
+# bu Enforce politikası, XTenant composition'ının ÜRETTİĞİ HER namespace'i
+# anında reddederdi (kendi ürettiğimiz kaynağı kendi guardrail'imizle
+# kilitlemek). Bkz. PLATFORM_CONTEXT.md Faz günlüğü.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pss-restricted
+  annotations:
+    policies.kyverno.io/title: Require Pod Security Standards "restricted"
+    policies.kyverno.io/category: Pod Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Her tenant-* namespace'i, Kubernetes'in yerleşik Pod Security Admission
+      kontrolcüsü için "restricted" profilini enforce/audit/warn modlarının
+      HEPSİNDE taşımalıdır.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-restricted-labels
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              names:
+                - "tenant-*"
+      validate:
+        message: >-
+          Tenant namespace'leri pod-security.kubernetes.io/{enforce,audit,warn}
+          etiketlerini "restricted" değeriyle taşımalıdır (Pod Security
+          Standards). XTenant composition'ı bunu otomatik üretir; elle
+          yaratılmış/değiştirilmiş bir namespace bu etikete sahip olmalıdır.
+        pattern:
+          metadata:
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/audit: restricted
+              pod-security.kubernetes.io/warn: restricted

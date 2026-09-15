@@ -1,0 +1,13 @@
+# =============================================================================
+# Örnek Claim — büyük, HA (3 replika), üretim Postgres'i
+# =============================================================================
+apiVersion: platform.internal/v1alpha1
+kind: PostgreSQLInstance
+metadata:
+  name: acme-orders-db
+  namespace: tenant-requests
+spec:
+  size: large               # 3 replika / 8 CPU / 16Gi / 500Gi
+  version: "16"
+  highAvailability: true    # large zaten 3 replika ürettiği için GEÇERLİ
+  tenantRef: tenant-acme-prod

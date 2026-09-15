@@ -1,0 +1,63 @@
+# =============================================================================
+# OpenCost — bare-metal manuel node fiyatlandırma modeli. Faz 9. ADR-0001 L4.
+#
+# Bare-metal'de bulut sağlayıcı fiyat API'si YOK (AWS/GCP/Azure billing
+# entegrasyonlarının hiçbiri geçerli değil) — bu yüzden OpenCost'un "custom
+# pricing" modu kullanılıyor: CPU/RAM/depolama saatlik maliyeti operatör
+# tarafından .env'de girilir (OPENCOST_CPU_HOURLY_COST vb.), 05-observability.sh
+# bunları `resources/custom-pricing-configmap.yaml.tpl`'e gömüp uygular.
+#
+# Bu değerler GERÇEK SIR DEĞİLDİR (fiyat, kimlik bilgisi değil) ama yine de
+# operatöre-özgü/ortam-bağımlı olduğundan (donanım amortismanı + elektrik +
+# bakım maliyetine göre hesaplanır) .env'de kalır, versions.env'de DEĞİL —
+# aynı ayrım ilkesi (bkz. underlay/README.md "Sırlar ve parametreler").
+# =============================================================================
+opencost:
+  exporter:
+    replicas: 1
+    resources:
+      requests: {cpu: 100m, memory: 128Mi}
+      limits: {cpu: 200m, memory: 512Mi}
+    # Bare-metal'de bulut sağlayıcı maliyet API'si yok → custom pricing
+    # ConfigMap'i (resources/custom-pricing-configmap.yaml.tpl, 05-observability.sh
+    # tarafından apply edilir) devreye alınır.
+    defaultClusterId: platform-baremetal
+    # DÜZELTME (Faz 12b, GERÇEK bir kind cluster'ında keşfedildi): bu alan
+    # ÖNCEDEN bir LİSTE (name/value çiftleri, standart K8s env şeması)
+    # olarak yazılmıştı — ama opencost chart'ının KENDİ şeması
+    # `exporter.extraEnv`'i bir HARİTA (`{FOO: BAR}`) olarak bekliyor
+    # (`helm show values opencost/opencost` ile doğrulandı). Liste
+    # verildiğinde Helm'in server-side apply'ı Go template'in map üzerinde
+    # `range` yaptığı yerde SAYISAL indeksleri ("0","1","2") env adı olarak
+    # üretiyor — `kubectl apply` "expected string, got ...valueUnstructured{
+    # Value:0}" hatasıyla KESİN olarak başarısız oluyordu (canlı doğrulandı,
+    # bu chart hiç GERÇEKTEN kurulmamıştı). Harita biçimine çevrildi.
+    extraEnv:
+      CLOUD_PROVIDER_API_KEY: ""   # bare-metal'de yok — boş bırakılması KASITLI
+      CUSTOM_PRICING_ENABLED: "true"
+      CUSTOM_PRICING_CONFIGMAP_NAME: opencost-custom-pricing
+
+  ui:
+    enabled: true
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {cpu: 100m, memory: 128Mi}
+
+  prometheus:
+    internal:
+      enabled: false   # kube-prometheus-stack'in KENDİ Prometheus'u kullanılıyor
+    external:
+      enabled: true
+      # kube-prometheus-stack Helm release adı "kube-prometheus-stack" —
+      # Prometheus operator'ın ürettiği Service adı bu sabit desene uyar.
+      url: http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090
+
+  # OpenCost'un kendi metriklerini (cost, allocation) kube-prometheus-stack'e
+  # scrape ettirmek için ServiceMonitor.
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: kube-prometheus-stack
+
+# ServiceAccount, namespace/pod/node metadata okumak için cluster-wide RBAC
+# gerektirir (chart kendi ClusterRole'ünü sağlar) — burada override YOK.

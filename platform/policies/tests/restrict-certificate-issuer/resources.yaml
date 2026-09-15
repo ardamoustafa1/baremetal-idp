@@ -1,0 +1,47 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: good-cluster-issuer
+  namespace: tenant-acme-dev
+spec:
+  secretName: good-cluster-issuer-tls
+  commonName: probe.dev.apps.example.internal
+  issuerRef:
+    kind: ClusterIssuer
+    name: vault-issuer-dev
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: good-tenant-issuer
+  namespace: tenant-acme-dev
+spec:
+  secretName: good-tenant-issuer-tls
+  commonName: probe.tenant-acme-dev.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: tenant-issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bad-random-clusterissuer
+  namespace: tenant-acme-dev
+spec:
+  secretName: bad-random-tls
+  commonName: evil.example.com
+  issuerRef:
+    kind: ClusterIssuer
+    name: some-random-issuer-i-made-up
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bad-random-namespaced-issuer
+  namespace: tenant-acme-dev
+spec:
+  secretName: bad-random-ns-tls
+  commonName: evil2.example.com
+  issuerRef:
+    kind: Issuer
+    name: my-own-sneaky-issuer

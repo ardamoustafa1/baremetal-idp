@@ -1,0 +1,10 @@
+apiVersion: platform.internal/v1alpha1
+kind: PostgreSQLInstance
+metadata:
+  name: acme-orders-db
+  namespace: tenant-requests
+spec:
+  size: medium
+  version: "16"
+  highAvailability: true
+  tenantRef: tenant-acme-dev

@@ -1,0 +1,47 @@
+# =============================================================================
+# Tenant claim'i AÇMA yetkisi — gerçek K8s RBAC katmanı.
+#
+# Kyverno (04-restrict-tenant-claim-creation.yaml) bunun BİREBİR AYNISINI
+# admission-review seviyesinde tekrar kontrol eder (defense-in-depth) —
+# ikisi de aynı grubu (`platform-tenant-requesters`) referans alır.
+#
+# NEDEN İKİSİ BİRDEN: RBAC, K8s API server'ın kendi yetkilendirme katmanıdır
+# ve normalde YETERLİDİR. Ama:
+#   1. RBAC yalnızca "hangi VERB/RESOURCE" bilir, "spec.networkTier=custom
+#      mu" gibi KAYNAK İÇERİĞİNE bakamaz — bu yüzden 06 numaralı politika
+#      (networkTier=custom) SADECE Kyverno ile mümkün, RBAC ile değil.
+#   2. Kyverno, admission zincirinde RBAC'tan SONRA çalışır — RBAC'ı
+#      atlayan bir yanlış konfigürasyon (örn. yanlış bir ClusterRoleBinding)
+#      olsa bile Kyverno ikinci bir bariyer olarak kalır.
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tenant-claim-requester
+  labels:
+    platform.internal/managed-by: policy-bootstrap
+rules:
+  - apiGroups: ["platform.internal"]
+    resources: ["tenants"]
+    verbs: ["create", "get", "list", "watch", "update", "patch"]
+    # NOT: "delete" BİLİNÇLİ OLARAK YOK — tenant silme, tenant-requests
+    # reposunda ayrı bir PR + gerekçe gerektirir (conventions.md, tenant-
+    # requests README "Tenant silme" sık sorulan soru).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tenant-claim-requesters
+  labels:
+    platform.internal/managed-by: policy-bootstrap
+subjects:
+  - kind: Group
+    name: platform-tenant-requesters
+    apiGroup: rbac.authorization.k8s.io
+  - kind: Group
+    name: platform-admins
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: tenant-claim-requester
+  apiGroup: rbac.authorization.k8s.io

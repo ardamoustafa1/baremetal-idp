@@ -1,0 +1,97 @@
+# =============================================================================
+# vault-unseal — Vault auto-unseal için ADANMIŞ, KÜÇÜK, STANDALONE bir Vault
+# örneği (ana HA/Raft Vault'un KENDİSİ DEĞİL).
+#
+# NEDEN GEREKLİ (Faz 12e, GERÇEK bir kind cluster'ında canlı doğrulandı):
+# ana Vault'un Shamir mühürü, HER pod yeniden başlatıldığında (chaos/upgrade/
+# node kaybı) o pod'un YENİDEN MÜHÜRLENMESİNE ve bir insanın ELLE unseal
+# etmesini BEKLEMESİNE yol açar — bu, gerçek bir chaos testinde CANLI olarak
+# kanıtlandı (bkz. PLATFORM_CONTEXT.md Faz 12d günlüğü #29).
+#
+# NEDEN BULUT KMS DEĞİL: ADR-0001 Karar'ı bulut sağlayıcısı KULLANMAMAYI
+# seçti — bu yüzden AWS KMS/Azure Key Vault/GCP KMS auto-unseal seçenekleri
+# MİMARİ OLARAK UYGUN DEĞİL. Vault'un KENDİ "Transit auto-unseal" özelliği
+# (ikinci, küçük bir Vault'un Transit secrets engine'ini KMS gibi kullanma)
+# TAMAMEN self-hosted, buluta bağımlı OLMAYAN bir alternatiftir.
+#
+# GÜVEN MODELİ DEĞİŞİKLİĞİ (BİLİNÇLİ, açıkça kabul edilen ödünleşim): Shamir
+# mühürünün "hiç kimse TEK BAŞINA açamaz" güvencesi, bu Vault için GEÇERLİLİĞİNİ
+# KORUR (bu örneğin KENDİSİ hâlâ Shamir ile mühürlenir — nadiren yeniden
+# başlar, ELLE unseal edilir). Ama ANA Vault artık bu örneğin transit
+# anahtarına GÜVENİR — bu örnek ele geçirilirse ana Vault'un mühürü de
+# tehlikeye girer. Bu, "hiçbir zaman auto-unseal yok" ile "buluta güven"
+# arasında ÜÇÜNCÜ bir seçenektir: yalnızca KENDİ altyapınıza güven.
+#
+# 3 node/HA DEĞİL — bu örneğin kendisi kritik yoldadır ama NADİREN yeniden
+# başlar (yalnızca upgrade/node bakımı) ve tek örnek kaybı yalnızca ANA
+# Vault'un OTOMATİK unseal'ını geçici olarak engeller (Shamir'e elle geri
+# dönülebilir — bkz. docs/runbooks/vault-unseal.md, bu YEDEK prosedür
+# olarak KORUNUR).
+# =============================================================================
+
+global:
+  enabled: true
+  tlsDisable: true    # ana Vault'la AYNI bilinçli sınır — bkz. pki/vault/README.md
+
+injector:
+  enabled: false
+
+server:
+  image:
+    repository: "hashicorp/vault"
+    tag: "1.18.1"
+
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: 200m, memory: 512Mi}
+
+  readinessProbe:
+    enabled: true
+    path: "/v1/sys/health?standbyok=true"
+
+  livenessProbe:
+    enabled: true
+    # AYNI düzeltme, ana Vault'taki KRİTİK bug'la (Faz 12b) aynı gerekçeyle:
+    # mühürlü/init edilmemiş bir pod ÖLDÜRÜLMEMELİDİR.
+    path: "/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"
+    initialDelaySeconds: 60
+
+  dataStorage:
+    enabled: true
+    size: 5Gi
+    storageClass: ceph-block
+    accessMode: ReadWriteOnce
+
+  auditStorage:
+    enabled: false   # bu örnek yalnızca transit anahtarı barındırır, PKI/secret DEĞİL
+
+  standalone:
+    enabled: true
+    config: |
+      ui = true
+
+      listener "tcp" {
+        address     = "[::]:8200"
+        tls_disable = 1
+      }
+
+      storage "file" {
+        path = "/vault/data"
+      }
+
+  ha:
+    enabled: false
+
+  service:
+    enabled: true
+
+ui:
+  enabled: true
+  serviceType: ClusterIP
+
+csi:
+  enabled: false
+
+serverTelemetry:
+  serviceMonitor:
+    enabled: false

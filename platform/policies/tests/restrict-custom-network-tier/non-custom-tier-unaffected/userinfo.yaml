@@ -1,0 +1,8 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: UserInfo
+metadata:
+  name: ordinary-requester
+userInfo:
+  username: bob
+  groups:
+    - platform-tenant-requesters

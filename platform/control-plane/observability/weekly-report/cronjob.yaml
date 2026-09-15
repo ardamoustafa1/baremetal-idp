@@ -1,0 +1,112 @@
+# =============================================================================
+# Haftalık tenant özeti — CronJob + RBAC. Faz 9, görev madde 6.
+#
+# GÖRÜNTÜ SEÇİMİ: `alpine/k8s` (kubectl + curl + jq + bash tek imajda) —
+# platform genelinde zaten kurulu bir araç seti (jq README'de "gerekli
+# araçlar" arasında) DIŞARIDAN bir python3 bağımlılığı EKLEMEDEN kullanılabilir
+# olduğu için tercih edildi; report.sh TAMAMEN jq ile yazıldı (python3 YOK).
+#
+# RBAC: ClusterRole salt-okunur (get/list) — namespace/resourcequota/
+# certificate okur, yalnızca KENDİ ürettiği `weekly-report` ConfigMap'ini
+# yazar (ResourceName kısıtı YOK çünkü ConfigMap her tenant namespace'inde
+# ayrı ayrı oluşturulur — cross-namespace create/update, tenant sayısı
+# ÖNCEDEN bilinmediği için ClusterRole'de namespace bazlı kısıtlanamaz;
+# bu KABUL EDİLEBİLİR bir kapsam çünkü yalnızca TEK sabit isimli bir
+# ConfigMap'e (weekly-report) yazma izni var, tenant'ın DİĞER kaynaklarına
+# DEĞİL).
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: weekly-report
+  namespace: observability
+  labels:
+    platform.internal/layer: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: weekly-report
+  labels:
+    platform.internal/layer: observability
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "resourcequotas"]
+    verbs: ["get", "list"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["weekly-report"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: weekly-report
+  labels:
+    platform.internal/layer: observability
+subjects:
+  - kind: ServiceAccount
+    name: weekly-report
+    namespace: observability
+roleRef:
+  kind: ClusterRole
+  name: weekly-report
+  apiGroup: rbac.authorization.k8s.io
+---
+# NOT: `weekly-report-script` ConfigMap'i BİLEREK burada YOK. report.sh
+# TEK doğruluk kaynağıdır (bu dizindeki .sh dosyası) — 05-observability.sh
+# `kubectl create configmap weekly-report-script --from-file=report.sh
+# --dry-run=client -o yaml | kubectl apply -f -` ile İÇERİĞİ script'ten
+# BİREBİR üretir. report.sh'i elle bir YAML'a gömüp İKİ kopya senkron
+# tutmak (compositions/tenant'ın function.k/composition.yaml SORUNUYLA
+# AYNI risk) yerine TEK dosya + otomatik üretim tercih edildi.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: weekly-tenant-report
+  namespace: observability
+  labels:
+    platform.internal/layer: observability
+spec:
+  # Her Pazartesi 06:00 UTC — hafta başında önceki haftanın özeti.
+  schedule: "0 6 * * 1"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 4
+  failedJobsHistoryLimit: 4
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            platform.internal/layer: observability
+        spec:
+          serviceAccountName: weekly-report
+          restartPolicy: Never
+          containers:
+            - name: report
+              image: alpine/k8s:1.30.4
+              command: ["bash", "/scripts/report.sh"]
+              env:
+                - name: OPENCOST_URL
+                  value: "http://opencost.opencost.svc.cluster.local:9003"
+                - name: REPORT_WINDOW
+                  value: "7d"
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {cpu: 100m, memory: 256Mi}
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+          volumes:
+            - name: script
+              configMap:
+                name: weekly-report-script
+                defaultMode: 0555

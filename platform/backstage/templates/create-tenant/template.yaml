@@ -1,0 +1,148 @@
+apiVersion: scaffolder.backstage.io/v1beta3
+kind: Template
+metadata:
+  name: create-tenant
+  title: Yeni Tenant Oluştur
+  description: Yeni bir tenant namespace'i talep eder (Namespace, RBAC, kota, ağ politikası,
+    Vault PKI, cert-manager Issuer — bkz. compositions/tenant/README.md). PR merge
+    olduğunda ArgoCD otomatik senkronize eder.
+  tags:
+  - tenant
+  - platform
+  - self-service
+spec:
+  owner: platform-team
+  type: infrastructure
+  parameters:
+  - title: Hedef
+    required:
+    - cluster
+    - repoUrl
+    properties:
+      cluster:
+        type: string
+        enum:
+        - platform
+        default: platform
+      repoUrl:
+        type: string
+        title: İstek reposu
+        ui:field: RepoUrlPicker
+        ui:options:
+          allowedHosts:
+          - github.com
+          allowedRepos:
+          - tenant-requests
+  - title: Tenant Bilgileri
+    required:
+    - teamName
+    - costCenter
+    - environment
+    - oidcGroup
+    - quotaTier
+    - networkTier
+    properties:
+      teamName:
+        title: Takım Adı
+        type: string
+        description: Ekip/ürün adı — ORTAM ADI DEĞİL (conventions.md §1).
+        pattern: ^[a-z][a-z0-9-]{1,28}[a-z0-9]$
+        ui:help: 'Örnek: acme. Yalnızca küçük harf, rakam, tire.'
+      costCenter:
+        title: Maliyet Merkezi Kodu
+        type: string
+        pattern: ^CC-[0-9]{4}$
+        ui:help: 'Örnek: CC-1042'
+      environment:
+        title: Ortam
+        type: string
+        enum:
+        - dev
+        - staging
+        - prod
+        enumNames:
+        - Development
+        - Staging
+        - Production
+      oidcGroup:
+        title: Keycloak Grubu
+        type: string
+        pattern: ^tenant-[a-z][a-z0-9-]{1,28}[a-z0-9]$
+        description: RoleBinding'in bağlanacağı Keycloak grubu — genellikle "tenant-<teamName>".
+      quotaTier:
+        title: Kaynak Profili (quotaTier)
+        type: string
+        enum:
+        - small
+        - medium
+        - large
+        enumNames:
+        - small — 4 CPU / 8Gi / 10 pod
+        - medium — 16 CPU / 32Gi / 50 pod
+        - large — 64 CPU / 128Gi / 200 pod
+        description: prod ortamında small SEÇİLEMEZ (XRD tarafından reddedilir).
+      networkTier:
+        title: Ağ Profili (networkTier)
+        type: string
+        enum:
+        - isolated
+        - open
+        - custom
+        enumNames:
+        - isolated — yalnızca DNS egress'i (varsayılan/en kısıtlı)
+        - open — tenant-içi serbest + DNS
+        - custom — yalnızca platform-admins seçebilir
+        description: '"custom" seçimi yalnızca platform-admins grubundaki kullanıcılar
+          tarafından onaylanabilir (restrict-custom-network-tier politikası).'
+    allOf:
+    - if:
+        properties:
+          environment:
+            const: prod
+      then:
+        properties:
+          quotaTier:
+            enum:
+            - medium
+            - large
+  steps:
+  - id: fetch
+    name: Şablonu doldur
+    action: fetch:template
+    input:
+      url: ./skeleton
+      values:
+        teamName: ${{ parameters.teamName }}
+        costCenter: ${{ parameters.costCenter }}
+        environment: ${{ parameters.environment }}
+        oidcGroup: ${{ parameters.oidcGroup }}
+        quotaTier: ${{ parameters.quotaTier }}
+        networkTier: ${{ parameters.networkTier }}
+        cluster: ${{ parameters.cluster }}
+  - id: publish
+    name: tenant-requests reposuna PR aç
+    action: publish:github:pull-request
+    input:
+      repoUrl: ${{ parameters.repoUrl }}
+      branchName: request-${{ parameters.cluster }}-${{ parameters.teamName }}-${{
+        parameters.environment }}
+      title: 'Yeni tenant: ${{ parameters.teamName }} (${{ parameters.environment
+        }})'
+      description: '**Takım:** ${{ parameters.teamName }}
+
+        **Ortam:** ${{ parameters.environment }}
+
+        **Maliyet merkezi:** ${{ parameters.costCenter }}
+
+        **Kaynak profili:** ${{ parameters.quotaTier }}
+
+        **Ağ profili:** ${{ parameters.networkTier }}
+
+        --- Bu PR, Backstage "Yeni Tenant Oluştur" şablonuyla otomatik açıldı.'
+      targetBranchName: main
+  output:
+    links:
+    - title: Açılan PR'ı görüntüle
+      url: ${{ steps.publish.output.remoteUrl }}
+    - title: PR numarası
+      text: ${{ steps.publish.output.pullRequestNumber }}

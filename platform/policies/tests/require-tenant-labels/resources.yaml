@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-payments
+  labels:
+    platform.internal/cost-center: "CC-1042"
+    platform.internal/owner: "team-payments"
+    platform.internal/environment: "prod"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-broken-missing
+  labels: {}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-broken-badformat
+  labels:
+    platform.internal/cost-center: "1042"
+    platform.internal/owner: "team-payments"
+    platform.internal/environment: "production"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels: {}

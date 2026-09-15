@@ -1,0 +1,36 @@
+# =============================================================================
+# Kyverno'nun `enforce-unique-cost-center` politikasının `context.apiCall`'ı
+# Tenant claim'lerini okuyabilmesi için — GERÇEK bir kind cluster'ında
+# `09-enforce-unique-cost-center.yaml` test edilirken keşfedilen bir eksik:
+# Kyverno'nun admission-controller ServiceAccount'ı VARSAYILAN OLARAK
+# platform.internal/v1alpha1 (Crossplane claim) kaynaklarını OKUYAMAZ —
+# `context.apiCall` bu RBAC olmadan "unknown" hatasıyla BAŞARISIZ olur (ve
+# `failurePolicy`'ye göre policy ya sessizce atlanır ya da — bu durumda
+# olduğu gibi — TÜM istekleri REDDEDER, yani cost-center kontrolü olmadan
+# kimse Tenant claim'i açamaz).
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno-tenant-reader
+  labels:
+    platform.internal/layer: policies
+rules:
+  - apiGroups: ["platform.internal"]
+    resources: ["tenants"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kyverno-tenant-reader
+  labels:
+    platform.internal/layer: policies
+subjects:
+  - kind: ServiceAccount
+    name: kyverno-admission-controller
+    namespace: kyverno
+roleRef:
+  kind: ClusterRole
+  name: kyverno-tenant-reader
+  apiGroup: rbac.authorization.k8s.io

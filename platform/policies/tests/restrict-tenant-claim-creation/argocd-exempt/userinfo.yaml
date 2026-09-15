@@ -1,0 +1,9 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: UserInfo
+metadata:
+  name: argocd-controller
+userInfo:
+  username: "system:serviceaccount:argocd:argocd-application-controller"
+  groups:
+    - system:serviceaccounts
+    - system:serviceaccounts:argocd

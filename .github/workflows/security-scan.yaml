@@ -1,0 +1,62 @@
+# =============================================================================
+# Platform reposu için secret-sızıntısı taraması. Faz 10, görev madde 3.
+#
+# NEDEN İKİ ARAÇ BİRDEN (gitleaks + trufflehog): ikisi de aynı sınıfta ama
+# FARKLI algılama mantığı kullanıyor — gitleaks regex/entropy tabanlı, hızlı;
+# trufflehog ek olarak bazı sağlayıcılara karşı GERÇEK doğrulama (verified/
+# unverified) yapabiliyor. Tek araca güvenmek yerine ikisi de PR'ı
+# BAĞIMSIZ olarak bloklayabilir — biri false-negative verirse diğeri
+# yakalar (bkz. tests/security-scan-fixture/ - bu görevde gerçek test
+# secret'larıyla İKİSİ DE doğrulandı, ayrıntı için o dizinin README'sine
+# bakın).
+#
+# `fetch-depth: 0` ZORUNLU — sığ (shallow) checkout yalnızca SON commit'i
+# tarar; bir sır birkaç commit önce eklenip sonradan "silinmiş" görünse
+# bile GİT GEÇMİŞİNDE kalır ve tam geçmiş taranmadan asla yakalanamaz.
+# =============================================================================
+name: security-scan
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -fLsS https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/
+      - name: gitleaks detect (tam git geçmişi)
+        run: gitleaks detect --source . --no-git=false --redact -v
+
+  trufflehog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install trufflehog
+        run: |
+          set -euo pipefail
+          curl -fLsS https://github.com/trufflesecurity/trufflehog/releases/download/v3.83.7/trufflehog_3.83.7_linux_amd64.tar.gz -o /tmp/trufflehog.tgz
+          tar -xzf /tmp/trufflehog.tgz -C /tmp trufflehog
+          sudo mv /tmp/trufflehog /usr/local/bin/
+      - name: trufflehog scan (tam git geçmişi, --fail ile PR'ı bloklar)
+        run: trufflehog git file://. --fail --no-update
+
+  # NOT (kapsamlı-eksik-tamamlama görevi, teknik borç #33'ün çözümü):
+  # `kyverno-policy-regression` job'ı BURADAN KALDIRILDI — `platform-ci.yaml`
+  # (composition+policy CI) artık TEK doğruluk kaynağı. Aynı komutu iki ayrı
+  # workflow'da çalıştırmak (gereksiz CI süresi/kaynak) teknik borç olarak
+  # işaretlenmişti; tekilleştirme burada yapıldı. Güvenlik taraması hâlâ bu
+  # dosyada (gitleaks/trufflehog) — yalnızca politika testi taşındı.

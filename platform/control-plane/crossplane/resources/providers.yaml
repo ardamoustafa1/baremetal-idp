@@ -1,0 +1,129 @@
+# =============================================================================
+# Crossplane Provider paketleri
+# ADR-0001 Karar 2.1: bulut provider'ı yok — hedeflerimiz provider-kubernetes
+# ve provider-helm ile karşılanıyor. provider-terraform ESCAPE HATCH'tir
+# (küme içi kaynak yönetimi için DEĞİL — bkz. ProviderConfig'teki not).
+#
+# sync-wave "1": Crossplane core chart'ın (wave "0"/varsayılan) CRD'lerini
+# (providers.pkg.crossplane.io) kurmasından SONRA uygulanır.
+#
+# Sürümler platform/underlay/versions.env ile senkron tutulmalı.
+# =============================================================================
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-kubernetes
+  labels:
+    platform.internal/managed-by: crossplane-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v0.15.0
+  # Provider'ın kendi pod'u için kaynak sınırı (Provider paketinin runtimeConfig'i)
+  runtimeConfigRef:
+    name: default
+  ignoreCrossplaneConstraints: false
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-helm
+  labels:
+    platform.internal/managed-by: crossplane-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  package: xpkg.upbound.io/crossplane-contrib/provider-helm:v0.20.4
+  runtimeConfigRef:
+    name: default
+  ignoreCrossplaneConstraints: false
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-terraform
+  labels:
+    platform.internal/managed-by: crossplane-bootstrap
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+    platform.internal/description: >-
+      Escape hatch — yalnızca Crossplane/Kubernetes/Helm provider'larıyla
+      ifade edilemeyen kaynaklar için (bkz. ADR-0001 Karar 2.1). Bu ortamda
+      bulut kaynağı YOK; kullanım alanı küme DIŞI, tek seferlik provizyon
+      (DNS delegasyonu vb.) ile sınırlıdır.
+spec:
+  package: xpkg.upbound.io/upbound/provider-terraform:v0.19.0
+  # DÜZELTME (Faz 12b, GERÇEK kind cluster'ında keşfedildi): "default"
+  # DeploymentRuntimeConfig KULLANILAMAZ — Crossplane, her Provider paketi
+  # için ServiceAccount adını ProviderRevision hash'inden ÜRETİR (ör.
+  # "provider-terraform-2ffd13e37c79") ve bu ad HER SÜRÜM YÜKSELTMESİNDE
+  # DEĞİŞİR. function.k'deki Terraform modülü Vault'a `auth_login` ile
+  # `role = "provider-terraform"` olarak bağlanıyor ve bu Vault kubernetes
+  # auth role'ü belirli bir SA adına (`bound_service_account_names`)
+  # bağlanmak ZORUNDA — SA adı her upgrade'de değişirse bu bağ KALICI
+  # OLARAK kopar (canlıda "service account name not authorized" 403'ü ve
+  # ardından terraform-provider-vault'ta nil-pointer panic olarak
+  # gözlemlendi). Çözüm: provider-terraform'a ÖZEL bir DeploymentRuntimeConfig
+  # ile SABİT bir ServiceAccount adı zorunlu kılınıyor (bkz. aşağıdaki
+  # "provider-terraform" RuntimeConfig, serviceAccountTemplate).
+  runtimeConfigRef:
+    name: provider-terraform
+  ignoreCrossplaneConstraints: false
+---
+# --- Provider runtime kaynak sınırları --------------------------------------
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: default
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  deploymentTemplate:
+    spec:
+      replicas: 1
+      # DÜZELTME (Faz 12b): bkz. aşağıdaki "provider-terraform" RuntimeConfig
+      # yorumu — Crossplane 2.4.0'da bu alan ZORUNLU, gerçek değeri
+      # Crossplane'in kendisi üretir.
+      selector: {}
+      template:
+        spec:
+          containers:
+            - name: package-runtime
+              resources:
+                requests: {cpu: 100m, memory: 256Mi}
+                limits:   {cpu: 200m, memory: 512Mi}
+---
+# provider-terraform'a ÖZEL RuntimeConfig — SABİT ServiceAccount adı için.
+# Bkz. yukarıdaki Provider "provider-terraform" spec.runtimeConfigRef notu.
+apiVersion: pkg.crossplane.io/v1beta1
+kind: DeploymentRuntimeConfig
+metadata:
+  name: provider-terraform
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  deploymentTemplate:
+    spec:
+      replicas: 1
+      # DÜZELTME (Faz 12b): Crossplane 2.4.0'ın DeploymentRuntimeConfig CRD
+      # şeması artık spec.deploymentTemplate.spec.selector alanını ZORUNLU
+      # kılıyor (canlı kind cluster'ında `kubectl apply` ile keşfedildi —
+      # boş obje bile geçerli, çünkü Crossplane GERÇEK selector'ü
+      # pkg.crossplane.io/provider + /revision etiketlerinden kendisi
+      # üretip bu alanın üzerine yazıyor; bkz. "default" RuntimeConfig'teki
+      # aynı düzeltme).
+      selector: {}
+      template:
+        spec:
+          containers:
+            - name: package-runtime
+              resources:
+                requests: {cpu: 100m, memory: 256Mi}
+                limits:   {cpu: 200m, memory: 512Mi}
+  serviceAccountTemplate:
+    metadata:
+      # SABİT ad — ProviderRevision hash'inden ÜRETİLMEZ, sürüm
+      # yükseltmelerinde DEĞİŞMEZ. Vault kubernetes auth role
+      # "provider-terraform"un bound_service_account_names alanı bu ada
+      # güvenle sabitlenebilir.
+      name: provider-terraform

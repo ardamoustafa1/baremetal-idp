@@ -1,0 +1,59 @@
+# =============================================================================
+# (3) networkTier=custom yalnızca platform-admin
+#
+# `custom`, composition'ın HİÇBİR ek ağ izni üretmediği (yalnızca
+# default-deny) tier'dır — tenant bunun üzerine kendi CiliumNetworkPolicy'sini
+# ekler (conventions.md §4.4). Bu, "ben ne yaptığımı biliyorum" demektir ve
+# yanlış yapılandırılmış bir kural namespace'i tamamen açabilir/kapatabilir;
+# bu yüzden sıradan bir tenant-requester DEĞİL, yalnızca platform-admins
+# bunu seçebilir.
+#
+# ArgoCD istisnası — bkz. 04 numaralı politikadaki AYNI gerekçe: gerçek
+# kontrol tenant-requests PR incelemesinde, bu ikinci bir bariyer.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-custom-network-tier
+  annotations:
+    policies.kyverno.io/title: Restrict networkTier=custom to Platform Admins
+    policies.kyverno.io/category: Multi-Tenancy / Network Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Tenant
+    policies.kyverno.io/description: >-
+      networkTier=custom yalnızca platform-admins grubundaki kullanıcılar
+      tarafından seçilebilir.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: only-admins-can-set-custom-tier
+      match:
+        any:
+          - resources:
+              kinds:
+                - Tenant
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.networkTier }}"
+            operator: Equals
+            value: custom
+      validate:
+        message: >-
+          networkTier=custom yalnızca platform-admins grubundaki kullanıcılar
+          tarafından seçilebilir (bu tier default-deny dışında HİÇBİR ağ
+          izni üretmez — yanlış yapılandırma riski yüksektir).
+        deny:
+          conditions:
+            all:
+              - key: "{{ starts_with(request.userInfo.username, 'system:serviceaccount:argocd:') }}"
+                operator: Equals
+                value: false
+              # NOT: `oidc:` önekli biçim de listelendi — bkz. docs/runbooks/
+              # k8s-api-server-oidc.md ve 04-restrict-tenant-claim-creation.yaml'daki
+              # aynı notu.
+              - key: "{{ request.userInfo.groups || `[]` }}"
+                operator: AllNotIn
+                value:
+                  - platform-admins
+                  - "oidc:platform-admins"

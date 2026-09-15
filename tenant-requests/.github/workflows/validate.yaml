@@ -1,0 +1,78 @@
+name: validate-tenant-request
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  secret-scan:
+    # Faz 10, görev madde 3: gitleaks ile secret-sızıntısı taraması.
+    # PR'ın TÜM commit geçmişini tarar (`--log-opts` YOK → varsayılan: base'e
+    # göre fark değil, checkout edilen TÜM git geçmişi) — bu yüzden
+    # `fetch-depth: 0` ZORUNLU, aksi halde shallow clone'da yalnızca son
+    # commit taranır ve daha eski bir commit'e gömülü bir sır KAÇIRILIR.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          curl -fLsS https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz -o /tmp/gitleaks.tgz
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/
+      - name: gitleaks detect
+        run: gitleaks detect --source . --no-git=false --redact -v
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      PLATFORM_REPO_DIR: ${{ github.workspace }}/platform-repo
+      REPORT_FILE: ${{ github.workspace }}/report/validation-report.md
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PLATFORM_REPO }}
+          ref: ${{ vars.PLATFORM_REPO_REF }}
+          token: ${{ secrets.PLATFORM_REPO_TOKEN || github.token }}
+          path: platform-repo
+          persist-credentials: false
+      - name: Install validation tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install PyYAML==6.0.2 jsonschema==4.23.0
+          curl -fLsS https://cli.crossplane.io/stable/v2.5.0/bin/linux_amd64/crossplane -o /tmp/crossplane
+          chmod +x /tmp/crossplane
+          sudo mv /tmp/crossplane /usr/local/bin/
+          curl -fLsS https://github.com/kyverno/kyverno/releases/download/v1.19.1/kyverno-cli_v1.19.1_linux_x86_64.tar.gz -o /tmp/kyverno.tgz
+          tar -xzf /tmp/kyverno.tgz -C /tmp kyverno
+          sudo mv /tmp/kyverno /usr/local/bin/
+          curl -fLsS https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tgz
+          tar -xzf /tmp/kubeconform.tgz -C /tmp kubeconform
+          sudo mv /tmp/kubeconform /usr/local/bin/
+      - name: Validate all current claims and policy regression fixtures
+        run: |
+          mkdir -p report
+          CHANGED_FILES="$(find tenants postgresql clusters -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null || true)"
+          export CHANGED_FILES
+          bash .github/scripts/validate-claims.sh
+          python3 .github/scripts/test-validation.py
+          kyverno test platform-repo/platform/policies/tests/
+      - name: Prepare report
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          mkdir -p report
+          printf '\nWorkflow status: %s\n' "$JOB_STATUS" >> report/validation-report.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: claim-validation
+          path: report/validation-report.md

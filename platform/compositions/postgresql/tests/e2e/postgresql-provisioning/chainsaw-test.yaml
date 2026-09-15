@@ -1,0 +1,142 @@
+# =============================================================================
+# E2E: PostgreSQLInstance claim'i uygulandığında Cluster Ready oluyor mu +
+# bağlantı sırrı görünüyor mu + TLS sertifikası geçerli mi + NetworkPolicy
+# başka bir tenant'tan erişimi GERÇEKTEN engelliyor mu.
+#
+# ÖN KOŞUL: Faz 1-3, Faz 6/6b (Tenant + guardrail'ler) ve bu composition
+# uygulanmış olmalı; tenant-acme-dev namespace'i (Tenant composition'ından)
+# ZATEN VAR olmalı.
+#
+# ÇALIŞTIRMA: chainsaw test platform/compositions/postgresql/tests/e2e/
+# =============================================================================
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: postgresql-provisioning
+spec:
+  timeouts:
+    assert: 5m   # CNPG cluster ayağa kalkması dakikalar sürebilir
+    exec: 30s
+  steps:
+    - name: setup-cross-tenant-fixture
+      try:
+        - apply:
+            file: other-tenant-namespace.yaml
+        - assert:
+            file: other-tenant-namespace.yaml
+
+    - name: apply-postgresql-claim
+      try:
+        - apply:
+            file: claim.yaml
+        - assert:
+            file: claim.yaml
+
+    # --- Cluster Ready --------------------------------------------------
+    - name: assert-cluster-ready
+      try:
+        - assert:
+            resource:
+              apiVersion: postgresql.cnpg.io/v1
+              kind: Cluster
+              metadata:
+                name: acme-orders-db
+                namespace: tenant-acme-dev
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+
+    # --- Bağlantı sırrı tenant namespace'inde görünüyor mu ---------------
+    - name: assert-connection-secret-visible
+      try:
+        - assert:
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: acme-orders-db-connection
+                namespace: tenant-acme-dev
+              data:
+                host: "?*"
+                port: "?*"
+                username: "?*"
+                password: "?*"
+                dbname: "?*"
+
+    # --- TLS sertifikası Ready/geçerli mi ---------------------------------
+    - name: assert-certificate-ready
+      try:
+        - assert:
+            resource:
+              apiVersion: cert-manager.io/v1
+              kind: Certificate
+              metadata:
+                name: acme-orders-db-server-tls
+                namespace: tenant-acme-dev
+              status:
+                conditions:
+                  - type: Ready
+                    status: "True"
+        - script:
+            content: |
+              set -euo pipefail
+              kubectl -n tenant-acme-dev get secret acme-orders-db-server-tls \
+                -o jsonpath='{.data.tls\.crt}' | base64 -d > /tmp/pg-server.crt
+              echo "--- Sertifika detayları ---"
+              openssl x509 -in /tmp/pg-server.crt -noout -subject -dates
+              echo "--- Vault Root+Intermediate zinciriyle doğrulama ---"
+              kubectl -n vault exec vault-0 -- sh -c \
+                'VAULT_ADDR=http://127.0.0.1:8200 vault read -field=certificate pki-int-dev/cert/ca' \
+                > /tmp/pg-int-ca.crt
+              kubectl -n vault exec vault-0 -- sh -c \
+                'VAULT_ADDR=http://127.0.0.1:8200 vault read -field=certificate pki-root/cert/ca' \
+                > /tmp/pg-root-ca.crt
+              cat /tmp/pg-int-ca.crt /tmp/pg-root-ca.crt > /tmp/pg-chain.pem
+              openssl verify -CAfile /tmp/pg-chain.pem /tmp/pg-server.crt
+            check:
+              ($error): ~
+              (contains($stdout, 'OK')): true
+
+    # =========================================================================
+    # İZOLASYON TESTİ: tenant-globex-dev'den (BAŞKA bir tenant) 5432 portuna
+    # erişim GERÇEKTEN engellenmelidir. Aynı tenant-acme-dev içinden erişim
+    # İZİN VERİLMELİDİR (karşılaştırma/kontrol amaçlı).
+    # =========================================================================
+    - name: verify-network-isolation
+      try:
+        - script:
+            content: |
+              set -uo pipefail   # -e YOK: beklenen bir "başarısızlık" var, script'i kendimiz yönetiyoruz
+
+              echo "--- KONTROL: tenant-acme-dev İÇİNDEN 5432'ye erişim (İZİN VERİLMELİ) ---"
+              kubectl -n tenant-acme-dev run same-tenant-probe --rm -i --restart=Never \
+                --image=busybox:1.36 --quiet --pod-running-timeout=60s -- \
+                sh -c 'timeout 5 nc -zv acme-orders-db-rw.tenant-acme-dev.svc.cluster.local 5432'
+              same_tenant_rc=$?
+
+              echo "--- İZOLASYON: tenant-globex-dev'DEN 5432'ye erişim (REDDEDİLMELİ) ---"
+              kubectl -n tenant-globex-dev run cross-tenant-probe --rm -i --restart=Never \
+                --image=busybox:1.36 --quiet --pod-running-timeout=60s -- \
+                sh -c 'timeout 5 nc -zv acme-orders-db-rw.tenant-acme-dev.svc.cluster.local 5432'
+              cross_tenant_rc=$?
+
+              echo "same_tenant_rc=${same_tenant_rc} cross_tenant_rc=${cross_tenant_rc}"
+
+              if [[ "${same_tenant_rc}" -eq 0 && "${cross_tenant_rc}" -ne 0 ]]; then
+                echo "✅ BEKLENEN: aynı tenant erişebiliyor, farklı tenant ENGELLENDİ"
+                exit 0
+              else
+                echo "❌ İZOLASYON BOZUK (same_tenant_rc=${same_tenant_rc}, cross_tenant_rc=${cross_tenant_rc})"
+                exit 1
+              fi
+            check:
+              ($error): ~
+              (contains($stdout, 'BEKLENEN')): true
+
+    - name: cleanup
+      try:
+        - delete:
+            file: claim.yaml
+        - delete:
+            file: other-tenant-namespace.yaml

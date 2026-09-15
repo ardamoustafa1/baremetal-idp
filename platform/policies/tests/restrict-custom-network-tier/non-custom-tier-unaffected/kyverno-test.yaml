@@ -1,0 +1,15 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: non-admin-can-set-isolated-tier
+policies:
+  - ../../../validation/06-restrict-custom-network-tier.yaml
+resources:
+  - resources.yaml
+userinfo: userinfo.yaml
+results:
+  - policy: restrict-custom-network-tier
+    rule: only-admins-can-set-custom-tier
+    resources: ["acme-isolated"]
+    kind: Tenant
+    result: skip

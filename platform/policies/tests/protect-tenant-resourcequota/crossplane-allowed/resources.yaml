@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tenant-quota
+  namespace: tenant-acme-dev
+spec:
+  hard:
+    requests.cpu: "999"
+    requests.memory: 999Gi
+    limits.cpu: "999"
+    limits.memory: 999Gi
+    pods: "999"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: tenant-limits
+  namespace: tenant-acme-dev
+spec:
+  limits:
+    - type: Container
+      default: {cpu: "999", memory: 999Gi}
+      defaultRequest: {cpu: "999", memory: 999Gi}
+

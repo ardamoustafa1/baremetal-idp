@@ -1,0 +1,26 @@
+# secrets — asla commit edilmez
+*.key
+*.pem
+*.p12
+*-unseal-init*
+*-init.json
+.env
+.env.local
+.env.*.local
+kubeconfig*
+*.kubeconfig
+
+# araç çıktıları
+.DS_Store
+charts/
+*.tgz
+node_modules/
+dist/
+.terraform/
+*.tfstate*
+
+# --- Faz 1: render edilmiş çıktılar ve sırlar ---
+platform/underlay/.env
+platform/**/rendered/
+platform/**/*.rendered.yaml
+platform/**/*.rendered.json

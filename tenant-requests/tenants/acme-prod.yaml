@@ -1,0 +1,19 @@
+# =============================================================================
+# Örnek Claim — üretim, tenant-içi serbest ağ, büyük kota
+#
+# NOT: environment=prod + quotaTier=small kombinasyonu XRD'nin
+# x-kubernetes-validations kuralı tarafından REDDEDİLİR (conventions §4.2).
+# Bu örnek bilinçli olarak quotaTier=large seçti.
+# =============================================================================
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: acme-prod
+  namespace: tenant-requests
+spec:
+  teamName: acme
+  costCenter: "CC-1042"
+  environment: prod
+  networkTier: open       # tenant-içi servisler birbiriyle serbest konuşur + DNS
+  quotaTier: large        # 64 CPU / 128Gi / 200 pod
+  oidcGroup: tenant-acme

@@ -1,0 +1,25 @@
+# =============================================================================
+# Cilium'un kendi sağlık kontrolü ve node-to-node trafiği.
+# default-deny bunları da keserdi; kesilirse "cilium status" bozuk görünür ve
+# gerçek arızadan ayırt edilemez.
+# =============================================================================
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: platform-allow-health
+  labels:
+    platform.internal/managed-by: underlay-bootstrap
+    platform.internal/layer: underlay
+spec:
+  description: Cilium health endpoint'leri ve host katmanı trafiğine izin verir.
+  endpointSelector:
+    matchLabels:
+      "reserved:health": ""
+  ingress:
+    - fromEntities:
+        - remote-node
+        - host
+  egress:
+    - toEntities:
+        - remote-node
+        - host

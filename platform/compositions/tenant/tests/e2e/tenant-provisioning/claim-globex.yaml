@@ -1,0 +1,17 @@
+# İZOLASYON TESTİ İÇİN FIXTURE — examples/'in parçası DEĞİLDİR.
+# acme'den FARKLI bir teamName: iki farklı tenant'ın Vault PKI role'lerinin
+# birbirinin domain'ine erişemediğini göstermek için gerekli (aynı takımın
+# dev/prod claim'leri aynı Vault tenant-<teamName> rolünü paylaşır, izolasyon
+# testine uygun değildir).
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: globex-dev
+  namespace: tenant-requests
+spec:
+  teamName: globex
+  costCenter: "CC-2099"
+  environment: dev
+  networkTier: isolated
+  quotaTier: small
+  oidcGroup: tenant-globex

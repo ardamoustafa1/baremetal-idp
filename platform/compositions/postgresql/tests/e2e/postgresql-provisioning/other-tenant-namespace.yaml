@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-globex-dev
+  labels:
+    platform.internal/tenant: globex
+    platform.internal/managed-by: crossplane
+    pod-security.kubernetes.io/enforce: restricted

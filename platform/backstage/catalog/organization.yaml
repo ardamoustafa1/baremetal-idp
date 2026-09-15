@@ -1,0 +1,18 @@
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: platform-team
+  description: Platform mühendisliği ekibi
+spec:
+  type: team
+  children: []
+---
+apiVersion: backstage.io/v1alpha1
+kind: Group
+metadata:
+  name: acme
+  description: Örnek tenant ekibi — gerçek ekipler kendi Group entity'lerini ekler
+spec:
+  type: team
+  parent: platform-team
+  children: []

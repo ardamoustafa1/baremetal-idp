@@ -1,0 +1,66 @@
+# =============================================================================
+# (c) Zorunlu etiketler: cost-center, owner, environment
+# conventions.md §3.1 ile isim/biçim BİREBİR uyumlu.
+#
+# Kapsam: yalnızca tenant namespace'leri (ad kalıbı: tenant-*, conventions §2.1).
+# Platform namespace'leri (argocd, kube-system, harbor, ...) bu politikayla
+# HİÇ eşleşmez — `match.any[].resources.names` seçicisi bunu ad düzeyinde sağlar.
+#
+# NOT: conventions §3.1 ayrıca `managed-by` ve `tenant` etiketlerini de zorunlu
+# kılıyor; bu politika görev kapsamında YALNIZCA istenen 3 etiketi (cost-center,
+# owner, environment) doğrular. Kalan 2 etiket (managed-by, tenant) Faz 5/6'da
+# tam guardrail setiyle birlikte ayrı bir politikaya eklenecek.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-tenant-labels
+  annotations:
+    policies.kyverno.io/title: Require Tenant Labels
+    policies.kyverno.io/category: Multi-Tenancy
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Namespace
+    policies.kyverno.io/description: >-
+      Tenant namespace'leri platform.internal/cost-center (^CC-[0-9]{4}$),
+      platform.internal/owner (boş olmayan) ve platform.internal/environment
+      (dev|staging|prod) etiketlerini taşımalıdır (conventions.md §3.1).
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-cost-center-owner-environment
+      match:
+        any:
+          - resources:
+              kinds:
+                - Namespace
+              names:
+                - "tenant-*"
+      validate:
+        message: >-
+          Tenant namespace'i şu etiketleri taşımalıdır:
+          platform.internal/cost-center (biçim: CC-#### — örn. CC-1042),
+          platform.internal/owner (boş olamaz),
+          platform.internal/environment (yalnızca: dev, staging, prod).
+          (conventions.md §3.1)
+        deny:
+          conditions:
+            any:
+              # cost-center: yok VEYA ^CC-[0-9]{4}$ ile eşleşmiyor
+              - key: "{{ request.object.metadata.labels.\"platform.internal/cost-center\" || '' }}"
+                operator: Equals
+                value: ""
+              - key: "{{ regex_match('^CC-[0-9]{4}$', request.object.metadata.labels.\"platform.internal/cost-center\" || '') }}"
+                operator: Equals
+                value: false
+              # owner: yok (format kontrolü — e-posta | team-<name> — Faz 5'te eklenecek)
+              - key: "{{ request.object.metadata.labels.\"platform.internal/owner\" || '' }}"
+                operator: Equals
+                value: ""
+              # environment: kapalı kümede değil (conventions §2.3)
+              - key: "{{ request.object.metadata.labels.\"platform.internal/environment\" || '' }}"
+                operator: NotIn
+                value:
+                  - dev
+                  - staging
+                  - prod

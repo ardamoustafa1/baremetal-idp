@@ -1,0 +1,57 @@
+# =============================================================================
+# Kyverno — Helm chart values
+# ADR-0001 L5 Guardrails. policies/README.md: yeni politika Audit → Enforce.
+# =============================================================================
+
+replicaCount: 1              # 3 node test topolojisi; Faz 4+ HA (3) değerlendirilir
+
+admissionController:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: 200m, memory: 512Mi}
+  # Webhook zaman aşımı — Faz 6'da composition tarafından üretilen çok
+  # sayıda kaynak tek seferde geldiğinde varsayılan (10s) yetersiz kalabilir.
+  failurePolicy: Fail
+  webhookTimeoutSeconds: 10
+
+backgroundController:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits:   {cpu: 200m, memory: 256Mi}
+
+cleanupController:
+  enabled: false            # Faz 6+ tenant TTL/cleanup politikaları gelince değerlendirilir
+
+reportsController:
+  enabled: true             # PolicyReport — Audit modundaki ihlalleri görünür kılar
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits:   {cpu: 200m, memory: 256Mi}
+
+# Namespace'ler bazında dışlama — Kyverno'nun KENDİ namespace'i ve kube-system
+# admission webhook'undan muaf olmalı (aksi halde kendi kendini kilitleyebilir)
+#
+# DÜZELTME (Faz 12c, GERÇEK bir kind cluster'ında keşfedildi): `config.
+# webhooks` daha önce bir LİSTE (`- namespaceSelector: ...`) olarak
+# yazılmıştı — ama chart 3.3.6'nın şeması bu alanı TEK bir harita (doğrudan
+# `namespaceSelector` anahtarı) olarak bekliyor. Liste verildiğinde Helm
+# "can't evaluate field namespaceSelector in type []interface {}" hatasıyla
+# KESİN olarak REDDEDİYORDU — bu values.yaml hiçbir gerçek Kyverno chart
+# kurulumunda ÇALIŞTIRILMAMIŞTI. Harita biçimine düzeltildi.
+config:
+  webhooks:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+            - kyverno
+
+metricsService:
+  create: true
+
+test:
+  enabled: false             # helm chart'ın kendi test hook'u; kyverno CLI testleri policies/tests/'te

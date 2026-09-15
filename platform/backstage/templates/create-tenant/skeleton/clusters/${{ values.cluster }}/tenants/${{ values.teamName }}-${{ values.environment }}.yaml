@@ -1,0 +1,12 @@
+apiVersion: platform.internal/v1alpha1
+kind: Tenant
+metadata:
+  name: ${{ values.teamName }}-${{ values.environment }}
+  namespace: tenant-requests
+spec:
+  teamName: ${{ values.teamName }}
+  costCenter: "${{ values.costCenter }}"
+  environment: ${{ values.environment }}
+  networkTier: ${{ values.networkTier }}
+  quotaTier: ${{ values.quotaTier }}
+  oidcGroup: ${{ values.oidcGroup }}

@@ -1,0 +1,33 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-signed-images-test
+spec:
+  webhookTimeoutSeconds: 30
+  failurePolicy: Fail
+  validationFailureAction: Enforce
+  rules:
+    - name: verify-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "localhost:5555/test/*"
+          attestors:
+            - count: 1
+              entries:
+                - keys:
+                    rekor:
+                      ignoreTlog: true
+                    ctlog:
+                      ignoreSCT: true
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5ZJwzwibfd9BFZKw7diOoICK6cLM
+                      V/aEhUdFga8O6CtKJvBDP27Fhl2MKA3AwIPFaPkpiancjztjbBleUc4pFg==
+                      -----END PUBLIC KEY-----
+          mutateDigest: true
+          required: true

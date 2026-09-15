@@ -1,0 +1,79 @@
+app:
+  title: Scaffolded Backstage App
+  baseUrl: http://localhost:3000
+organization:
+  name: My Company
+backend:
+  baseUrl: http://localhost:7007
+  listen:
+    port: 7007
+  csp:
+    connect-src:
+    - '''self'''
+    - 'http:'
+    - 'https:'
+  cors:
+    origin: http://localhost:3000
+    methods:
+    - GET
+    - HEAD
+    - PATCH
+    - POST
+    - PUT
+    - DELETE
+    credentials: true
+  database:
+    client: better-sqlite3
+    connection: ':memory:'
+  actions:
+    pluginSources:
+    - auth
+    - catalog
+    - scaffolder
+integrations:
+  github:
+  - host: github.com
+    token: ${GITHUB_TOKEN}
+proxy: null
+techdocs:
+  builder: local
+  generator:
+    runIn: docker
+  publisher:
+    type: local
+auth:
+  environment: production
+  providers: {}
+scaffolder: null
+catalog:
+  import:
+    entityFilename: catalog-info.yaml
+    pullRequestBranchName: backstage-integration
+  rules:
+  - allow:
+    - Component
+    - System
+    - API
+    - Resource
+    - Location
+  locations:
+  - type: file
+    target: ../../examples/entities.yaml
+  - type: file
+    target: ../../examples/template/template.yaml
+    rules:
+    - allow:
+      - Template
+  - type: file
+    target: ../../examples/org.yaml
+    rules:
+    - allow:
+      - User
+      - Group
+kubernetes: null
+permission:
+  enabled: true
+mcpActions:
+  name: My Company Backstage
+  description: Tools for managing your software catalog, creating new services from
+    templates, and exploring your developer portal

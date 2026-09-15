@@ -1,0 +1,37 @@
+# =============================================================================
+# SIRA ÖNEMLİ: Bu politika default-deny'den ÖNCE uygulanır.
+#
+# default-deny açıldığı anda, DNS çözümlemesi de kesilir. Bu, hata ayıklaması
+# en zor arıza türüdür: pod ayakta, log'da "connection refused" yok, sadece
+# isim çözülmüyor. Bu yüzden DNS izni önce konur.
+#
+# L7 DNS kuralı (matchPattern "*") aynı zamanda Hubble'a hangi pod'un hangi
+# ismi sorduğunu gösterir — Faz 6'da tenant egress'ini DNS adıyla kısıtlamanın
+# (ADR-0001 Karar 2.2 #1) temeli budur.
+# =============================================================================
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: platform-allow-dns
+  labels:
+    platform.internal/managed-by: underlay-bootstrap
+    platform.internal/layer: underlay
+spec:
+  description: >-
+    Tüm endpoint'lerin kube-dns'e DNS sorgusu yapmasına izin verir ve
+    L7 DNS görünürlüğü açar. default-deny'nin ön koşuludur.
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"

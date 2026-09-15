@@ -1,0 +1,99 @@
+# =============================================================================
+# ArgoCD — GitOps uzlaşma motoru
+# ADR-0001 L1: "bir katman, kendisinden yukarıdaki bir katmana bağımlı olamaz."
+# ArgoCD'nin kendisi bu kuraldan MUAFTIR — kendi kendini yönetemez
+# (yumurta-tavuk); helm ile elle kurulur, sonrasında HER ŞEYİ o yönetir.
+#
+# Bu dosyada statik parola/token YOKTUR. Admin kimlik bilgisi chart'ın kendi
+# ürettiği `argocd-initial-admin-secret`'tır (rastgele, ilk girişte alınır).
+# =============================================================================
+
+global:
+  # 3 node test topolojisi — HA gerektirmez. Faz 4 sonrası ölçek kararı verilir.
+  domain: "" # Gateway API/Ingress Faz 3'te TLS ile birlikte bağlanacak
+
+configs:
+  params:
+    server.insecure: true   # TLS Faz 3'te Vault PKI ile (ADR-0001 Karar 2.3)
+  cm:
+    # --- Uygulama örnek etiketi: hangi Application'ın hangi katmana ait olduğu
+    application.instanceLabelKey: platform.internal/managed-by
+
+    # --- Crossplane paket sağlığı için özel health check ------------------
+    # NEDEN GEREKLİ: ArgoCD, pkg.crossplane.io/v1 Provider ve Function CRD'lerini
+    # tanımadığı için varsayılan olarak "Healthy" sayar — bu da sync-wave
+    # ilerlemesinin providerın GERÇEKTEN ayağa kalkmasını BEKLEMEDEN bir sonraki
+    # wave'e geçmesine yol açar. provider-kubernetes/provider-helm'in
+    # ProviderConfig'i, provider'ın kendi CRD'lerini (örn.
+    # providerconfigs.kubernetes.crossplane.io) henüz kaydetmemiş olması
+    # durumunda "no matches for kind" hatasıyla BAŞARISIZ olur. Bu health check
+    # olmadan wave sıralaması yalnızca kozmetiktir.
+    resource.customizations.health.pkg.crossplane.io_Provider: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = "Provider paketi henüz sağlık bildirmedi"
+      if obj.status ~= nil and obj.status.conditions ~= nil then
+        for i, condition in ipairs(obj.status.conditions) do
+          if condition.type == "Healthy" and condition.status == "True" then
+            hs.status = "Healthy"
+            hs.message = "Provider healthy"
+          end
+          if condition.type == "Healthy" and condition.status == "False" then
+            hs.status = "Degraded"
+            hs.message = condition.message or "Provider unhealthy"
+          end
+        end
+      end
+      return hs
+    resource.customizations.health.pkg.crossplane.io_Function: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = "Function paketi henüz sağlık bildirmedi"
+      if obj.status ~= nil and obj.status.conditions ~= nil then
+        for i, condition in ipairs(obj.status.conditions) do
+          if condition.type == "Healthy" and condition.status == "True" then
+            hs.status = "Healthy"
+            hs.message = "Function healthy"
+          end
+          if condition.type == "Healthy" and condition.status == "False" then
+            hs.status = "Degraded"
+            hs.message = condition.message or "Function unhealthy"
+          end
+        end
+      end
+      return hs
+
+controller:
+  replicas: 1                     # 3 node test topolojisi; Faz 4'te HA değerlendirilir
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits:   {cpu: 500m, memory: 1Gi}
+
+server:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: 200m, memory: 512Mi}
+  service:
+    type: ClusterIP    # MetalLB IP harcamak yerine port-forward; Faz 3'te
+                       # Gateway API + TLS arkasına alınacak
+
+repoServer:
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits:   {cpu: 200m, memory: 512Mi}
+
+applicationSet:
+  enabled: false        # Faz 2 kapsamında kullanılmıyor; ihtiyaç doğarsa açılır
+
+notifications:
+  enabled: false         # Faz 4'te Keycloak/Slack entegrasyonuyla birlikte
+
+redis:
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits:   {cpu: 100m, memory: 128Mi}
+
+dex:
+  enabled: false          # OIDC Faz 4'te Keycloak client'ı ile ArgoCD'ye eklenecek

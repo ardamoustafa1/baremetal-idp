@@ -1,0 +1,31 @@
+# =============================================================================
+# Loki/Tempo'nun log/trace chunk'larını yazacağı Rook-Ceph RGW bucket'ları —
+# Faz 1'in Harbor/Velero OBC'leriyle BİREBİR AYNI desen: `rook-ceph`
+# namespace'inde (OBC'nin ürettiği Secret/ConfigMap oraya düşer), sabit
+# bucketName, `ceph-bucket` StorageClass'ı. 05-observability.sh, Faz 1'in
+# Harbor adımındaki AYNI teknikle bu Secret'ı okuyup `observability`
+# namespace'ine kopyalar.
+# =============================================================================
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: loki-storage
+  namespace: rook-ceph
+  labels:
+    platform.internal/managed-by: observability-bootstrap
+    platform.internal/layer: control-plane
+spec:
+  bucketName: loki-storage
+  storageClassName: ceph-bucket
+---
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata:
+  name: tempo-storage
+  namespace: rook-ceph
+  labels:
+    platform.internal/managed-by: observability-bootstrap
+    platform.internal/layer: control-plane
+spec:
+  bucketName: tempo-storage
+  storageClassName: ceph-bucket

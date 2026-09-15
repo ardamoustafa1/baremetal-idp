@@ -1,0 +1,61 @@
+# =============================================================================
+# (a) Tüm pod'larda resource request/limit zorunluluğu
+#
+# ✅ Faz 12e'de Enforce'a ALINDI. Önce Audit modunda GERÇEK bir kind
+# cluster'ına karşı denendi (Faz 12d) — Vault/Keycloak/Postgres/Kyverno'nun
+# KENDİSİ dahil, repo genelinde neredeyse HER YERDE yalnızca `limits.memory`
+# olup `limits.cpu` OLMADIĞI ortaya çıktı (bu politika HER İKİSİNİ de
+# zorunlu kılıyor). Faz 12e'de TÜM bu dosyalar (`underlay/*`, `control-
+# plane/*`, `pki/*` — ~30 dosya, requests.cpu'nun 2 katı bir limits.cpu
+# eklenerek) düzeltildi, ardından bu politika GERÇEKTEN Enforce'a alınıp
+# yeni bir tenant zincirinin (SIFIRDAN) hâlâ Ready=True'ya ulaştığı canlı
+# doğrulandı.
+# =============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-resources
+  annotations:
+    policies.kyverno.io/title: Require Pod Resources
+    policies.kyverno.io/category: Resource Management
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Her container cpu VE memory için hem requests hem limits belirtmelidir.
+      Belirtilmemesi, kapasite planlamasını ve ResourceQuota'yı anlamsız kılar
+      ve "gürültülü komşu" (noisy neighbor) riskini tenant'lar arasında taşır.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: validate-resources
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      exclude:
+        any:
+          # Platform sistem bileşenleri (DaemonSet'ler dahil) bu fazda muaf;
+          # her biri kendi kaynak sınırlarını kendi values.yaml'ında tanımlıyor
+          # (bkz. underlay/*, control-plane/* README'leri). Tenant namespace'leri
+          # ASLA bu listeye eklenmez.
+          - resources:
+              namespaces:
+                - kube-system
+                - kube-node-lease
+                - kube-public
+      validate:
+        message: >-
+          Her container'da cpu/memory requests VE limits zorunludur
+          (conventions.md §4 — tier tabanlı kaynak profilleri).
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              resources:
+                requests:
+                  memory: "?*"
+                  cpu: "?*"
+                limits:
+                  memory: "?*"
+                  cpu: "?*"

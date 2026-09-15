@@ -1,0 +1,62 @@
+# =============================================================================
+# Crossplane v2 — Helm chart values
+# ADR-0001 Karar 2.1 (Terraform değil), Karar 2.4 (KCL composition function)
+#
+# Statik kimlik bilgisi YOKTUR. Provider'lar in-cluster ServiceAccount
+# (InjectedIdentity) ile çalışır — bkz. resources/providerconfigs.yaml
+# =============================================================================
+
+replicas: 1                    # 3 node test topolojisi; Faz 4+ HA değerlendirilir
+
+# Composition Functions (pipeline mode) Crossplane 1.14+ itibarıyla GA ve
+# varsayılan olarak açık — CROSSPLANE_CHART_VERSION 1.18.0 bunu karşılar.
+# Özel bir feature-gate BAYRAĞI gerekmiyor.
+args:
+  - --enable-usages          # Composition'lar arası referans/kullanım takibi
+
+resourcesCrossplane:
+  limits: {cpu: "1", memory: 1Gi}
+  requests: {cpu: 200m, memory: 256Mi}
+
+rbacManager:
+  deploy: true
+  # NEDEN: provider-kubernetes ve provider-helm, kendi CRD'lerinin ötesinde
+  # kümedeki KEYFİ kaynakları yönetmek zorunda (bu onların TÜM işlevidir —
+  # "Kubernetes nesnesi yönetmek" bizzat bu provider'ların amacı).
+  # Crossplane'in varsayılan RBAC toplulaştırması yalnızca bir provider'ın
+  # KENDİ CRD'lerine erişim verir; bu ikisi için YETERSİZ.
+  #
+  # Bu yüzden 02-control-plane.sh, bu iki provider'ın ServiceAccount'larını
+  # (adları paket kurulumunda rastgele üretildiği için etiket seçiciyle bulup)
+  # cluster-admin'e bağlar — Crossplane topluluğunun provider-kubernetes /
+  # provider-helm için DOKÜMANTE ETTİĞİ standart yoldur (README "Installation").
+  # Bu YETKİ GENİŞLİĞİ bilinçli bir bedeldir; sınırı Kyverno guardrail'leri
+  # ve audit log'ları çeker — statik bir KİMLİK BİLGİSİ değildir.
+  managementPolicy: All
+
+resourcesRBACManager:
+  limits: {cpu: 500m, memory: 512Mi}
+  requests: {cpu: 100m, memory: 128Mi}
+
+packageCache:
+  # Provider/Function OCI paketleri için kalıcı önbellek — kümenin internet
+  # erişimi kesintili/yavaşsa yeniden indirmeyi önler.
+  pvc: false               # Faz 1'de ceph-block hazır; ihtiyaç olursa true + storageClass: ceph-block
+  sizeLimit: 1Gi
+
+metrics:
+  enabled: true
+  service:
+    servicePort: 8080
+
+# Faz 4'te kube-prometheus-stack kurulunca açılacak
+provider:
+  packages: []             # Provider'lar Helm values'tan DEĞİL, ayrı Provider
+                            # CR'ları olarak yönetiliyor (resources/providers.yaml)
+                            # — böylece sürüm/health durumu `kubectl get providers`
+                            # ile ayrı ayrı görülebilir, chart upgrade'e bağlı kalmaz.
+function:
+  packages: []              # Aynı gerekçe — resources/functions.yaml
+
+nodeSelector: {}
+tolerations: []

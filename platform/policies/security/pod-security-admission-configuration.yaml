@@ -1,0 +1,89 @@
+# =============================================================================
+# kube-apiserver'ın YERLEŞİK Pod Security Admission kontrolcüsü için
+# cluster-genelinde VARSAYILAN. Faz 10, görev madde 2.
+#
+# !!! BU DOSYA `kubectl apply` İLE UYGULANMAZ !!!
+#
+# Bu, bir Kubernetes API kaynağı DEĞİL — kube-apiserver'ın kendi başlatma
+# argümanı olan `--admission-control-config-file`'a verilen bir dosyadır.
+# kubeadm ile kurulu bir cluster'da bu, kubeadm'in ClusterConfiguration'ına
+# şu şekilde EKLENİR (control-plane node'larda, `/etc/kubernetes/`
+# altında saklanan bir dosya olarak — bu repo'nun GitOps akışının
+# DIŞINDADIR, çünkü apiserver'ın kendisi henüz ayakta değilken devreye
+# girmesi gerekir):
+#
+#   1. Bu dosyayı HER control-plane node'a kopyalayın:
+#      /etc/kubernetes/admission/pod-security-admission-configuration.yaml
+#   2. kubeadm ClusterConfiguration'a ekleyin (`kubeadm init` öncesi veya
+#      `kubeadm upgrade` ile):
+#        apiServer:
+#          extraArgs:
+#            admission-control-config-file: /etc/kubernetes/admission/pod-security-admission-configuration.yaml
+#          extraVolumes:
+#            - name: admission-config
+#              hostPath: /etc/kubernetes/admission
+#              mountPath: /etc/kubernetes/admission
+#              readOnly: true
+#   3. `kubeadm upgrade apply` (mevcut bir cluster'da) veya yeni kurulumda
+#      `kubeadm init --config kubeadm-config.yaml`.
+#
+# NEDEN İKİ AYRI MEKANİZMA (bu dosya + Kyverno ClusterPolicy) GEREKLİ:
+# bkz. `02-require-pss-restricted-clusterwide.yaml`'ın başlık yorumu —
+# özet: bu dosya "gerçek" admission-time varsayılanı sağlar (Kyverno
+# webhook'undan önce çalışır, Kyverno çökerse bile korur), Kyverno
+# politikası ise bunun GERÇEKTEN uygulandığını ikinci, bağımsız bir
+# katmanla doğrular.
+#
+# TEKNİK BORÇ: Bu dosyanın GERÇEK bir kubeadm cluster'ına uygulandığı bu
+# görevde DOĞRULANAMADI (bu ortamda kubeadm/gerçek bir control-plane
+# node'u yok) — yalnızca `PodSecurityConfiguration` şemasına göre statik
+# olarak yazıldı. Kurulumdan sonra `kube-apiserver --admission-control-
+# config-file=... --dry-run` (veya apiserver loglarında "Loaded admission
+# plugin configuration" satırı) ile doğrulanmalı.
+# =============================================================================
+apiVersion: apiserver.config.k8s.io/v1
+kind: AdmissionConfiguration
+plugins:
+  - name: PodSecurity
+    configuration:
+      apiVersion: pod-security.admission.config.k8s.io/v1
+      kind: PodSecurityConfiguration
+      defaults:
+        enforce: "restricted"
+        enforce-version: "latest"
+        audit: "restricted"
+        audit-version: "latest"
+        warn: "restricted"
+        warn-version: "latest"
+      # Bu istisnalar, Kyverno ClusterPolicy'sindeki (02-require-pss-
+      # restricted-clusterwide.yaml) `exclude` listesiyle SENKRON tutulmalı
+      # — biri güncellenirken diğeri unutulursa, bu iki katman birbirinden
+      # SESSİZCE SAPAR (bir namespace apiserver'da muaf ama Kyverno'da
+      # değil, ya da tersi). Bu senkronizasyon ELLE sağlanır (KCL
+      # composition'lardaki function.k/composition.yaml drift riskiyle
+      # AYNI sınıf teknik borç — bkz. PLATFORM_CONTEXT.md).
+      exemptions:
+        usernames: []
+        runtimeClasses: []
+        namespaces:
+          - kube-system
+          - kube-node-lease
+          - kube-public
+          - default
+          - cilium
+          - metallb-system
+          - rook-ceph
+          - argocd
+          - crossplane-system
+          - kyverno
+          - external-secrets
+          - vault
+          - vault-unseal
+          - cert-manager
+          - harbor
+          - keycloak
+          - observability
+          - opencost
+          - backstage
+          - pki-test
+          - observability-cert-alert-test

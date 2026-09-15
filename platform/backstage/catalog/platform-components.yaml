@@ -1,0 +1,43 @@
+# =============================================================================
+# Platformun KENDİ bileşenleri — tenant/postgres ENTITY'LERİ BURADA DEĞİL
+# (onlar Kubernetes provider ile OTOMATİK keşfedilir, bkz. app-config.yaml
+# "catalog.providers.kubernetes" ve compositions/*/function.k'deki
+# "catalogInfo" ConfigMap kaynağı).
+# =============================================================================
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: internal-developer-platform
+  description: Bare-metal self-servis altyapı platformu
+spec:
+  owner: platform-team
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: xtenant-composition
+  description: Tenant self-servis soyutlaması (Crossplane XRD + KCL)
+  links:
+    - url: https://github.com/REPLACE_ME/platform/tree/main/platform/compositions/tenant
+      title: Kaynak kod
+spec:
+  type: crossplane-composition
+  lifecycle: production
+  owner: platform-team
+  system: internal-developer-platform
+---
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: xpostgresqlinstance-composition
+  description: Self-servis CloudNativePG soyutlaması (Crossplane XRD + KCL)
+  links:
+    - url: https://github.com/REPLACE_ME/platform/tree/main/platform/compositions/postgresql
+      title: Kaynak kod
+spec:
+  type: crossplane-composition
+  lifecycle: production
+  owner: platform-team
+  system: internal-developer-platform
+  dependsOn:
+    - component:xtenant-composition

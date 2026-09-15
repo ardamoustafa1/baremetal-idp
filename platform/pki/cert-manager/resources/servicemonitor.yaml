@@ -1,0 +1,36 @@
+# =============================================================================
+# cert-manager ServiceMonitor — kube-prometheus-stack (Faz 4) İÇİN HAZIRLANDI
+#
+# !!! Bu CR, monitoring.coreos.com/v1 CRD'sini (Prometheus Operator) GEREKTİRİR.
+#     Faz 4'e kadar bu CRD kümede YOK. 03-pki.sh bu CRD'nin varlığını
+#     kontrol eder; yoksa bu dosyayı UYGULAMAZ ve net bir uyarı basar.
+#     ArgoCD üzerinden senkronize edilecekse `SkipDryRunOnMissingResource=true`
+#     sync option'ı ile Faz 4'e kadar "beklemede" bırakılabilir. !!!
+#
+# certmanager_certificate_expiration_timestamp_seconds metriği, sertifika
+# başına son kullanma zamanını epoch olarak verir — bu metrik üzerine
+# Faz 4'te "sertifika N gün içinde dolacak" uyarı kuralı yazılacak.
+# =============================================================================
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  labels:
+    platform.internal/layer: pki
+    # kube-prometheus-stack'in ServiceMonitor seçicisiyle eşleşecek etiket
+    # (Faz 4'te kesinleşecek release adına göre ayarlanabilir)
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cert-manager
+      app.kubernetes.io/instance: cert-manager
+  namespaceSelector:
+    matchNames:
+      - cert-manager
+  endpoints:
+    - port: tcp-prometheus-servicemonitor   # cert-manager chart'ın metrics port adı
+      path: /metrics
+      interval: 60s
+      honorLabels: true

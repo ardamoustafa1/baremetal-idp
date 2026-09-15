@@ -1,0 +1,13 @@
+# =============================================================================
+# Örnek Claim — küçük, tek replikalı, HA olmayan Postgres (dev ortamı)
+# =============================================================================
+apiVersion: platform.internal/v1alpha1
+kind: PostgreSQLInstance
+metadata:
+  name: acme-cache-db
+  namespace: tenant-requests
+spec:
+  size: small              # 1 replika / 2 CPU / 4Gi / 20Gi
+  version: "16"
+  highAvailability: false  # small ile ZORUNLU false — true olsaydı reddedilirdi
+  tenantRef: tenant-acme-dev

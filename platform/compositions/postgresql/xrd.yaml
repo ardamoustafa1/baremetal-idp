@@ -1,0 +1,101 @@
+# =============================================================================
+# XPostgreSQLInstance — Self-servis CloudNativePG soyutlaması
+# ADR-0001 Karar 2.1 (Crossplane) + Karar 2.4 (KCL).
+#
+# Claim kind: PostgreSQLInstance (tenant-requests'te yazılan)
+# Composite kind: XPostgreSQLInstance (cluster-scoped)
+#
+# `tenantRef` YORUMU (bilinçli tasarım kararı — bkz. README "tenantRef ne
+# anlama geliyor"): Crossplane composition function'ları, başka bir kaynağın
+# (bir Tenant claim'inin) spec'ini OKUYUP ondan namespace TÜRETEMEZ (bu,
+# cross-resource reference/Environment Configs gerektirir — bu fazın
+# kapsamı dışında, bkz. PLATFORM_CONTEXT.md teknik borcu). Bu yüzden
+# `tenantRef`, bir Tenant CLAIM adı DEĞİL, doğrudan o tenant'ın ZATEN VAR
+# OLAN namespace adıdır (örn. "tenant-acme-dev") — istek sahibi bunu kendi
+# Tenant'ının `kubectl get xtenant`/PR'ından kopyalar.
+# =============================================================================
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: xpostgresqlinstances.platform.internal
+  labels:
+    platform.internal/layer: compositions
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  group: platform.internal
+  names:
+    kind: XPostgreSQLInstance
+    plural: xpostgresqlinstances
+  claimNames:
+    kind: PostgreSQLInstance
+    plural: postgresqlinstances
+  connectionSecretKeys: []
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - size
+                - version
+                - highAvailability
+                - tenantRef
+              properties:
+                size:
+                  type: string
+                  description: >-
+                    t-shirt kaynak/replika profili. Değerler
+                    compositions/postgresql/function.k'de TEK bir yerde
+                    tanımlıdır.
+                  enum: [small, medium, large]
+                version:
+                  type: string
+                  description: PostgreSQL major sürümü (CNPG'nin desteklediği sürümler).
+                  enum: ["14", "15", "16", "17"]
+                highAvailability:
+                  type: boolean
+                  description: >-
+                    true ise minimum 2 replika ZORUNLUDUR — size=small
+                    (1 replika) ile birlikte KULLANILAMAZ. Bu kural hem
+                    burada (CEL, admission zamanında hızlı red) hem de
+                    function.k içinde (KCL assert, composition zamanında
+                    ikinci bir bariyer) uygulanır.
+                  default: false
+                tenantRef:
+                  type: string
+                  description: >-
+                    Bu Postgres örneğinin ait olduğu tenant'ın MEVCUT
+                    namespace adı (örn. "tenant-acme-dev") — bir Tenant
+                    CLAIM adı DEĞİL. CNPG Cluster, CiliumNetworkPolicy,
+                    Certificate ve Secret'ların hepsi bu namespace'te
+                    oluşturulur.
+                  pattern: '^tenant-[a-z][a-z0-9-]{1,28}[a-z0-9]-(dev|staging|prod)$'
+              x-kubernetes-validations:
+                # ZORUNLU: highAvailability=true + size=small yasak
+                # (small=1 replika, HA minimum 2 ister).
+                - rule: "!(self.highAvailability == true && self.size == 'small')"
+                  message: >-
+                    highAvailability=true iken size=small kullanılamaz
+                    (small tier 1 replika üretir, HA minimum 2 replika ister).
+                    size=medium veya size=large seçin.
+            status:
+              type: object
+              properties:
+                connectionSecretName:
+                  type: string
+                  description: Uygulamanın kullanacağı bağlantı Secret'ının adı.
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type: {type: string}
+                      status: {type: string}
+                      reason: {type: string}
+                      message: {type: string}

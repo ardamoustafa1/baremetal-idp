@@ -1,0 +1,42 @@
+# =============================================================================
+# MetalLB — L2 mode
+# ADR-0001: L2 mode, ilk faz için. BGP'ye geçiş yalnızca bu dizini etkiler.
+#
+# Bu dosyada IP YOKTUR. Adres havuzu ayrı bir CR'dir (ipaddresspool.yaml.tpl)
+# ve .env'den doldurulur — böylece IP değişikliği chart yükseltmesinden bağımsız.
+# =============================================================================
+
+controller:
+  logLevel: info
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 256Mi
+
+speaker:
+  logLevel: info
+  # L2 mode'da BGP'ye gerek yok; frr konteynerini çalıştırmıyoruz.
+  frr:
+    enabled: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 256Mi
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+# Faz 4'te kube-prometheus-stack kurulunca açılacak
+prometheus:
+  serviceMonitor:
+    enabled: false
+
+crds:
+  enabled: true

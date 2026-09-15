@@ -1,0 +1,98 @@
+# =============================================================================
+# Crossplane ÇEKİRDEĞİNİN composed kaynakları uygulayabilmesi için RBAC.
+#
+# NEDEN GEREKLİ (Faz 12b'de GERÇEK bir cluster'da keşfedildi): Crossplane v2'de
+# Composition pipeline'ının ürettiği NATIVE/CRD kaynakları (CiliumNetworkPolicy,
+# cert-manager Issuer/Certificate, CNPG Cluster, tf Workspace, ESO
+# SecretStore/PushSecret/ExternalSecret, OBC, ServiceMonitor, PDB...) bir
+# provider üzerinden DEĞİL, Crossplane ÇEKİRDEĞİ tarafından doğrudan
+# uygulanır. Çekirdeğin ServiceAccount'u bu tipleri VARSAYILAN OLARAK
+# GÖREMEZ — sonuç: her reconcile
+#   "cannot get composed resource: Timeout: failed waiting for
+#    *unstructured.Unstructured Informer to sync"
+# ile başarısız olur ve HİÇBİR tenant kaynağı oluşmaz (canlı olarak
+# doğrulandı: `kubectl auth can-i list ciliumnetworkpolicies
+# --as=system:serviceaccount:crossplane-system:crossplane` → "no").
+#
+# Repo ÖNCEDEN yalnızca provider-kubernetes/provider-helm SA'larına yetki
+# veriyordu (`02-control-plane.sh` → `bind_provider_rbac`) — çekirdeğe
+# HİÇBİR şey vermiyordu. Bu dosya o boşluğu kapatır.
+#
+# YÖNTEM: `rbac.crossplane.io/aggregate-to-crossplane: "true"` etiketi —
+# Crossplane'in KENDİ rbac-manager'ı bu ClusterRole'ü çekirdeğin
+# ClusterRole'üne OTOMATİK olarak dahil eder. Doğrudan cluster-admin
+# bağlamak yerine bu tercih edildi: yetki, yalnızca composition'ların
+# GERÇEKTEN ürettiği tiplerle SINIRLI kalır (en az ayrıcalık).
+#
+# YENİ BİR COMPOSITION TİPİ EKLERKEN: ürettiği her yeni CRD grubunu bu
+# listeye EKLEYİN, yoksa o composition sessizce yukarıdaki informer
+# hatasıyla takılır.
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crossplane-composed-resources
+  labels:
+    platform.internal/layer: control-plane
+    rbac.crossplane.io/aggregate-to-crossplane: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+rules:
+  # Tenant composition: Namespace/SA/Quota/LimitRange/ConfigMap + RBAC
+  - apiGroups: [""]
+    resources: ["namespaces", "serviceaccounts", "resourcequotas", "limitranges", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "bind", "escalate"]
+  # DÜZELTME (Faz 12c, GERÇEK bir kind cluster'ında keşfedildi): Kubernetes
+  # RBAC'ta `<kaynak>` ve `<kaynak>/status` AYRI kaynak tipleridir — yalnızca
+  # ana kaynağa yetki vermek status ALT-KAYNAĞINA erişimi VERMEZ. Crossplane
+  # çekirdeği, composed kaynağın GERÇEK durumunu (Ready/Sync condition'ları,
+  # `.status` alanı) okuyabilmek için status alt-kaynağına da GEREKSİNİM
+  # duyar — bu olmadan "... is not allowed to [...] resource X/status ..."
+  # uyarı olayları (canlı olarak, tekrar tekrar gözlemlendi:
+  # ciliumnetworkpolicies/status, issuers/status, jobs/status) üretiyordu.
+  # Kaynak oluşturma yine de BAŞARILI oluyordu (bu yüzden fark edilmesi
+  # zaman aldı) ama durum okuma/otomatik-ready tespiti EKSİK kalıyordu.
+  # Bu listeye yeni bir composition tipi eklerken KARŞILIK GELEN /status
+  # girdisini de eklemeyi UNUTMAYIN.
+
+  # Cilium ağ politikaları (tenant networkTier)
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies", "ciliumnetworkpolicies/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # cert-manager (tenant-issuer + Postgres sunucu sertifikası)
+  - apiGroups: ["cert-manager.io"]
+    resources: ["issuers", "issuers/status", "certificates", "certificates/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # DÜZELTME (Faz 12b): tenant Vault rolleri/policy'leri artık provider-
+  # terraform Workspace ile DEĞİL, native bir batch/v1 Job ile yönetiliyor
+  # (bkz. compositions/tenant/function.k §6 — provider-terraform'un
+  # kalıcı "no state file" hatası nedeniyle taşındı). `tf.upbound.io`
+  # RBAC'ı artık HİÇBİR composition tarafından üretilmiyor; provider hâlâ
+  # kurulu (gelecekteki gerçek escape-hatch kullanımları için) ama bu
+  # aggregate ClusterRole'den kaldırıldı — en az ayrıcalık ilkesi.
+  - apiGroups: ["batch"]
+    resources: ["jobs", "jobs/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # CloudNativePG (Postgres composition)
+  - apiGroups: ["postgresql.cnpg.io"]
+    resources: ["clusters", "clusters/status", "scheduledbackups", "scheduledbackups/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Rook-Ceph ObjectBucketClaim (Postgres yedek bucket'ı)
+  - apiGroups: ["objectbucket.io"]
+    resources: ["objectbucketclaims", "objectbucketclaims/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # External Secrets Operator (bağlantı sırrı round-trip'i)
+  - apiGroups: ["external-secrets.io"]
+    resources: ["secretstores", "secretstores/status", "externalsecrets", "externalsecrets/status", "pushsecrets", "pushsecrets/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Prometheus Operator (Postgres ServiceMonitor)
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # PodDisruptionBudget (HA Postgres)
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

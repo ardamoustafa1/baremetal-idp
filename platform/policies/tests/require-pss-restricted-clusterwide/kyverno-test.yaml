@@ -1,0 +1,24 @@
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-pss-restricted-clusterwide
+policies:
+  - ../../security/02-require-pss-restricted-clusterwide.yaml
+resources:
+  - resources.yaml
+results:
+  - policy: require-pss-restricted-clusterwide
+    rule: require-restricted-labels
+    resources: ["some-app-team"]
+    kind: Namespace
+    result: fail
+  - policy: require-pss-restricted-clusterwide
+    rule: require-restricted-labels
+    resources: ["another-app-team"]
+    kind: Namespace
+    result: pass
+  - policy: require-pss-restricted-clusterwide
+    rule: require-restricted-labels
+    resources: ["rook-ceph"]
+    kind: Namespace
+    result: skip

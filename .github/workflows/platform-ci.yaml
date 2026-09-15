@@ -1,0 +1,108 @@
+# =============================================================================
+# Platform reposu CI — her PR'da composition + policy testleri. Faz 11,
+# görev madde 1+2.
+#
+# NEDEN AYRI JOB'LAR: composition testleri (crossplane render, Docker
+# gerektirir) ve Kyverno testleri (yalnızca CLI) birbirinden BAĞIMSIZ
+# çalışabilir — paralel job'lar toplam CI süresini kısaltır, biri
+# başarısız olsa da diğeri sonucu raporlar (fail-fast KAPALI, `Always`
+# semantiği kadar katı değil ama her ikisi de bağımsız görünür).
+#
+# TEKİLLEŞTİRME (kapsamlı-eksik-tamamlama görevi, teknik borç #33'ün
+# çözümü): `security-scan.yaml`'daki `kyverno-policy-regression` job'ı
+# (aynı `kyverno test` komutunu ÇALIŞTIRAN bir kopya) KALDIRILDI — bu dosya
+# artık Kyverno politika testleri için TEK doğruluk kaynağıdır.
+# =============================================================================
+name: platform-ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  composition-tests:
+    # Faz 6/7'de kurulan `render-examples.sh`/`verify-sync.sh` script'lerini
+    # GERÇEK `crossplane` CLI + Docker (function-kcl/function-auto-ready
+    # container'ları) ile çalıştırır — simülasyon DEĞİL, bu repo'nun kendi
+    # geliştirme ortamında (bkz. Faz 6/7/9 günlükleri) zaten kanıtlanmış
+    # aynı yöntem.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        composition: [tenant, postgresql]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install crossplane CLI
+        run: |
+          set -euo pipefail
+          curl -fLsS https://cli.crossplane.io/stable/v2.5.0/bin/linux_amd64/crossplane -o /tmp/crossplane
+          chmod +x /tmp/crossplane
+          sudo mv /tmp/crossplane /usr/local/bin/
+      - name: function.k ↔ composition.yaml senkron kontrolü
+        run: bash "platform/compositions/${{ matrix.composition }}/tests/verify-sync.sh"
+      - name: crossplane render (gerçek Docker + function-kcl/function-auto-ready)
+        run: bash "platform/compositions/${{ matrix.composition }}/tests/render-examples.sh" --check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rendered-${{ matrix.composition }}
+          path: platform/docs/examples-output/${{ matrix.composition }}*.rendered.yaml
+
+  kyverno-policy-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install kyverno CLI
+        run: |
+          set -euo pipefail
+          curl -fLsS https://github.com/kyverno/kyverno/releases/download/v1.19.1/kyverno-cli_v1.19.1_linux_x86_64.tar.gz -o /tmp/kyverno.tgz
+          tar -xzf /tmp/kyverno.tgz -C /tmp kyverno
+          sudo mv /tmp/kyverno /usr/local/bin/
+      - name: kyverno test (tüm politika paketleri — validation/ + security/)
+        run: kyverno test platform/policies/tests/
+      - name: PSS istisna listesi drift kontrolü (teknik borç #30)
+        run: |
+          python3 -m pip install --quiet PyYAML==6.0.2
+          bash platform/policies/security/verify-pss-exemption-sync.sh
+
+  e2e-chain-test:
+    # Faz 11, görev madde 3: kind tabanlı gerçek cluster'da Tenant → Postgres
+    # → bağlantı → cert doğrulama zincirini otomatik çalıştırır.
+    #
+    # ÖNEMLİ SINIRLAMA (bilinçli, açıkça işaretlendi): bu iş akışı,
+    # `tests/e2e/kind-chain/run.sh`'i çalıştırır — bu script, GERÇEK
+    # compositions/{tenant,postgresql}/composition.yaml'ı KULLANIR ama
+    # Cilium/Vault-Terraform/Rook-Ceph/ESO'ya bağımlı 7 kaynağı (bkz.
+    # tests/e2e/kind-chain/README.md "Kapsam dışı bırakılanlar") devre dışı
+    # bırakan bir RUNTIME PATCH uygular (kind'de bu bileşenler yok) — bu,
+    # bu görevde GERÇEKTEN çalıştırılıp doğrulanan senaryodur (bkz.
+    # docs/chaos-test-results.md ve PLATFORM_CONTEXT.md Faz 11 günlüğü).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install kind + kubectl + helm
+        run: |
+          set -euo pipefail
+          curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+          chmod +x /tmp/kind && sudo mv /tmp/kind /usr/local/bin/
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      - name: Kind cluster oluştur
+        run: kind create cluster --name platform-e2e --wait 120s
+      - name: Uçtan uca zincir testini çalıştır
+        run: bash tests/e2e/kind-chain/run.sh
+      - name: Cluster durumunu dök (hata ayıklama için, her zaman)
+        if: always()
+        run: |
+          kubectl get all -A | tail -100
+          kubectl get xtenant,xpostgresqlinstance -A -o wide || true
+      - name: Kind cluster'ı temizle
+        if: always()
+        run: kind delete cluster --name platform-e2e || true

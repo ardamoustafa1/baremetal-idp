@@ -1,0 +1,62 @@
+# =============================================================================
+# sync-wave 1 — Crossplane v2 (core) + Provider/Function paketleri
+#
+# Multi-source Application:
+#   source[0] Helm chart  → crossplane core (CRD'ler, controller, RBAC manager)
+#   source[1] Git dizini  → Provider/Function/ProviderConfig CR'ları
+#                           (kendi içlerinde sync-wave "1"/"2" ile ek sıralı)
+#
+# Bu bileşen YENİDİR (Faz 1'de kurulmadı) — adoption riski yok, otomatik
+# sync güvenlidir.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crossplane
+  namespace: argocd
+  labels:
+    platform.internal/layer: control-plane
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    # NOT: repo/sürüm burada SOMUTLAŞTIRILDI (versions.env ile senkron tutun).
+    # Bu Application, root-app üzerinden ArgoCD tarafından DOĞRUDAN git'ten
+    # okunur — ${VAR} bırakılırsa ArgoCD'ye literal string olarak gider ve
+    # chart çözümü başarısız olur. PLATFORM_REPO_URL/REVISION ise
+    # 02-control-plane.sh'nin resolve_git_placeholders() adımıyla, ArgoCD
+    # devreye girmeden ÖNCE tüm apps/ dizininde tek seferlik somutlaştırılır.
+    - repoURL: "https://charts.crossplane.io/stable"
+      chart: crossplane
+      targetRevision: "1.18.0"  # versions.env: CROSSPLANE_CHART_VERSION
+      helm:
+        releaseName: crossplane
+        valueFiles:
+          - $values/platform/control-plane/crossplane/values.yaml
+    - repoURL: "${PLATFORM_REPO_URL}"
+      targetRevision: "${PLATFORM_REPO_REVISION}"
+      ref: values
+    - repoURL: "${PLATFORM_REPO_URL}"
+      targetRevision: "${PLATFORM_REPO_REVISION}"
+      path: platform/control-plane/crossplane/resources
+      directory:
+        recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: crossplane-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true
+    retry:
+      limit: 8
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 5m
