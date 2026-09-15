@@ -1,0 +1,46 @@
+# Backstage source: platform/backstage/portal; configure.py renders this to .yaml.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backstage
+  namespace: argocd
+  labels:
+    platform.internal/layer: backstage
+  annotations:
+    argocd.argoproj.io/sync-wave: "5"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    - repoURL: "https://backstage.github.io/charts"
+      chart: backstage
+      targetRevision: "2.6.1"  # versions.env: BACKSTAGE_CHART_VERSION
+      helm:
+        releaseName: backstage
+        valueFiles:
+          - $values/platform/backstage/app/values.yaml
+    - repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
+      targetRevision: "main"
+      ref: values
+    - repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
+      targetRevision: "main"
+      path: platform/backstage/app/resources
+      directory:
+        recurse: true
+        # NOT (Faz 3/6/7'nin AYNI dersi): values.yaml (Helm values) ve
+        # app-config.yaml (Backstage'in KENDİ ${VAR} runtime-interpolation'ı
+        # — ArgoCD'nin YAML parse etmeye çalışması BOZUK davranış üretirdi)
+        # BİLEREK bu dizinin DIŞINDA — yalnızca gerçek K8s manifestleri
+        # (`resources/`) burada. app-config.yaml, 04-backstage.sh tarafından
+        # ayrı bir ConfigMap olarak (envsubst'siz, OLDUĞU GİBİ) uygulanır.
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: backstage
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true

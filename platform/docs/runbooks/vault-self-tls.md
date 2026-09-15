@@ -101,7 +101,7 @@ server:
 ```
 
 **Basitleştirilmiş öneri:** adım 3'te TEK bir sertifika üretin
-(`common_name=vault-server`, `alt_names` içinde `vault-0.vault-internal,
+(`common_name=vault-active.vault.svc.cluster.local` — rolün allowed_domains'inde TAM eşleşen giriş, bkz. DÜZELTME notu; `alt_names` içinde `vault-0.vault-internal,
 vault-1.vault-internal,vault-2.vault-internal,vault.vault.svc.cluster.local,
 vault-active.vault.svc.cluster.local`), TEK bir `vault-server-tls` Secret'ı
 oluşturun, TÜM pod'lara AYNI Secret'ı mount edin — pod-başına ayrı

@@ -117,19 +117,41 @@ sync-wave 1) → Vault yer tutucu (sync-wave 2, otomatik sync KAPALI)**
 
 ### `${PLATFORM_REPO_URL}` — repo-genelinde tek seferlik somutlaştırma
 
-`platform/bootstrap/app-of-apps/underlay/*.tpl` ve
-`platform/control-plane/apps/*.tpl`, ArgoCD tarafından **doğrudan git'ten**
-okunur (root-app'ın `directory.recurse` kaynağı). Cilium/MetalLB/Rook'un
-IP/disk değerlerinin aksine, `PLATFORM_REPO_URL`/`PLATFORM_REPO_REVISION`
-**cluster'a değil bu reponun kendisine özgüdür** — yani tek seferlik,
-ortam-bağımsız bir değerdir. `02-control-plane.sh`, root-app'ı uygulamadan
-ÖNCE bu iki dizinde çözülmemiş `${PLATFORM_REPO_URL}` kalıp kalmadığını
-kontrol eder (`check_git_placeholders_resolved`) ve varsa **durur** —
-tam olarak çalıştırılması gereken `sed` komutunu ve ardından gelen
-`git commit`'i ekrana basar. Bu, Faz 1'in envsubst/`$values` dersinin
-(bkz. PLATFORM_CONTEXT.md Faz günlüğü) doğal devamıdır: repo-genelinde sabit
-bir değeri her sync'te yeniden render etmeye çalışmak yerine, bir kere
-çözüp commit etmek daha güvenlidir.
+**DÜZELTME (Faz 12i, code review #1 — KRİTİK):** bu bölüm ÖNCEDEN "`.tpl`
+dosyalarını YERİNDE sed'leyip AYNI `.tpl` uzantısıyla commit edin" diyordu.
+Bu YETERSİZDİ: ArgoCD'nin `directory` source'u RESMİ olarak yalnızca
+`.yaml`/`.yml`/`.json` uzantılarını yükler (bkz. https://argo-cd.readthedocs.io/
+en/stable/user-guide/directory/) — `${VAR}` içindeki değerler çözülse BİLE,
+dosya hâlâ `.tpl` ise ArgoCD onu HİÇ GÖRMEZ, root-app SIFIR child
+Application keşfeder. Canlı olarak doğrulanmış (kullanıcının kod
+incelemesinde): `platform/control-plane/apps/`'daki 16 dosyanın TAMAMI
+`.yaml.tpl`'di, hiçbiri ArgoCD'nin standart directory kaynağı tarafından
+yüklenmiyordu.
+
+**GÜNCEL PROSEDÜR:** `platform/bootstrap/app-of-apps/underlay/*.tpl`,
+`platform/control-plane/apps/*.tpl` ve `platform/policies/security/*.tpl`
+(ArgoCD tarafından doğrudan git'ten okunan ÜÇ dizin) KANONİK ŞABLON olarak
+KALIR — silinmez/yeniden adlandırılmaz. `platform/bootstrap/
+render-app-manifests.sh`, `${VAR}`'ları GERÇEK değerlerle (versions.env +
+PLATFORM_REPO_URL/PLATFORM_REPO_REVISION/HARBOR_HOSTNAME) doldurup AYNI
+ADDA ama `.tpl` UZANTISI OLMADAN bir KARDEŞ dosya üretir — ArgoCD'nin
+GERÇEKTEN okuduğu budur (composition'ların function.k/composition.yaml
+İKİLİSİYLE AYNI desen). İKİ dosya da git'e commit edilir:
+
+```bash
+export PLATFORM_REPO_URL="https://github.com/<org>/<repo>.git"
+export PLATFORM_REPO_REVISION="main"
+./platform/bootstrap/render-app-manifests.sh
+git add platform/control-plane/apps platform/bootstrap/app-of-apps/underlay platform/policies/security
+git commit -m "chore: app manifestlerini render et"
+```
+
+`02-control-plane.sh`, root-app'ı uygulamadan ÖNCE bu script'i `--verify`
+modunda çağırır (`check_git_placeholders_resolved`) ve DRİFT/eksik `.yaml`
+varsa **durur**. `TENANT_REQUESTS_REPO_URL`'e bağımlı 2 dosya
+(05/06-tenant-requests-*) BİLİNÇLİ OLARAK render EDİLMEZ (o repo henüz
+yok) — script bunları atlayıp uyarır, bu bir HATA sayılmaz; o repo
+oluşturulup URL bilinince script yeniden çalıştırılmalı.
 
 ### Crossplane provider RBAC'ı neden script'te (manifestte değil)
 

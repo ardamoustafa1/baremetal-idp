@@ -97,6 +97,16 @@ $EDITOR platform/underlay/.env      # IP havuzu, disk filtresi, parolalar — zo
 
 ```bash
 $EDITOR platform/underlay/.env      # PLATFORM_REPO_URL / PLATFORM_REPO_REVISION ekleyin
+
+# ZORUNLU tek seferlik adım (Faz 12i, code review #1 — KRİTİK): ArgoCD'nin
+# root Application'ı .tpl dosyalarını OKUYAMAZ (yalnızca .yaml/.yml/.json) —
+# bu script gerçek .yaml kardeşlerini üretir. Detay: bootstrap/README.md.
+export PLATFORM_REPO_URL="https://github.com/<org>/<repo>.git"
+export PLATFORM_REPO_REVISION="main"
+./platform/bootstrap/render-app-manifests.sh
+git add platform/control-plane/apps platform/bootstrap/app-of-apps/underlay platform/policies/security
+git commit -m "chore: app manifestlerini render et"
+
 ./platform/bootstrap/02-control-plane.sh
 ```
 

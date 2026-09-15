@@ -1,0 +1,42 @@
+# sync-wave 0 — CNI. Hiçbir şey bundan önce çalışamaz.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: underlay-cilium
+  namespace: argocd
+  labels:
+    platform.internal/layer: underlay
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    - repoURL: "https://helm.cilium.io/"
+      chart: cilium
+      targetRevision: "1.16.5"
+      helm:
+        releaseName: cilium
+        valueFiles:
+          - $values/platform/underlay/cilium/values.rendered.yaml
+    - repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
+      targetRevision: "main"
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: false        # CNI'da prune KAPALI — yanlış prune = cluster ağı gider
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+  ignoreDifferences:
+    # Cilium operator bu alanları çalışma zamanında değiştirir
+    - group: apps
+      kind: DaemonSet
+      name: cilium
+      jsonPointers:
+        - /spec/template/metadata/annotations

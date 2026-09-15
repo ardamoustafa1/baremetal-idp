@@ -34,7 +34,7 @@ metadata:
     policies.kyverno.io/severity: critical
     policies.kyverno.io/subject: Pod
     policies.kyverno.io/description: >-
-      Harbor registry'sinden (${HARBOR_HOSTNAME}) çekilen hiçbir imaj,
+      Harbor registry'sinden (harbor.apps.example.internal) çekilen hiçbir imaj,
       platformun Cosign anahtarıyla imzalanmamışsa Pod'a dönüştürülemez.
 spec:
   # DÜZELTME (Faz 12g, code review #10): bu alan hiç YOKTU — Kyverno'nun
@@ -56,7 +56,7 @@ spec:
                 - Pod
       # NOT: imageReferences sabit bir örnek domain'le (harbor.
       # apps.platform.internal) yazıldı — 05-observability.sh benzeri bir
-      # bootstrap adımı bu policy'yi `envsubst` ile `${HARBOR_HOSTNAME}`
+      # bootstrap adımı bu policy'yi `envsubst` ile `harbor.apps.example.internal`
       # üzerinden render ETMELİDİR (bkz. tests/README.md "kurulum notu").
       # Kyverno ClusterPolicy'leri Helm/envsubst şablon MEKANİZMASINA sahip
       # değil — bu yüzden policies/README.md'nin "politika yaşam döngüsü"
@@ -74,7 +74,7 @@ spec:
       # alan kaldırıldı.
       verifyImages:
         - imageReferences:
-            - "${HARBOR_HOSTNAME}/*"
+            - "harbor.apps.example.internal/*"
           attestors:
             - count: 1
               entries:
@@ -105,7 +105,7 @@ spec:
           required: true
 
     # DÜZELTME (Faz 12g, code review #10): verifyImages yalnızca
-    # `imageReferences: ["${HARBOR_HOSTNAME}/*"]` ile EŞLEŞEN imajları
+    # `imageReferences: ["harbor.apps.example.internal/*"]` ile EŞLEŞEN imajları
     # doğrular — Kyverno'da bir Pod'un imajı HİÇBİR verifyImages
     # imageReferences deseniyle eşleşmiyorsa, o kural o Pod için SESSİZCE
     # ATLANIR (reddedilmez). Yani bir tenant `docker.io/...` veya başka
@@ -160,7 +160,7 @@ spec:
                 - velero
       validate:
         message: >-
-          Bu Pod, Harbor registry'si (${HARBOR_HOSTNAME}) DIŞINDA bir imaj
+          Bu Pod, Harbor registry'si (harbor.apps.example.internal) DIŞINDA bir imaj
           kullanıyor. Yalnızca Harbor'dan çekilen imajlar yukarıdaki
           verify-harbor-image-signature kuralıyla Cosign imza doğrulamasından
           geçer — başka bir registry'den imaj çekmek bu doğrulamayı TAMAMEN
@@ -168,9 +168,9 @@ spec:
         deny:
           conditions:
             any:
-              - key: "{{ request.object.spec.containers[?!starts_with(image, '${HARBOR_HOSTNAME}/')] | length(@) }}"
+              - key: "{{ request.object.spec.containers[?!starts_with(image, 'harbor.apps.example.internal/')] | length(@) }}"
                 operator: GreaterThan
                 value: 0
-              - key: "{{ (request.object.spec.initContainers || `[]`)[?!starts_with(image, '${HARBOR_HOSTNAME}/')] | length(@) }}"
+              - key: "{{ (request.object.spec.initContainers || `[]`)[?!starts_with(image, 'harbor.apps.example.internal/')] | length(@) }}"
                 operator: GreaterThan
                 value: 0

@@ -298,8 +298,17 @@ check_init_and_unseal_status() {
   log "Vault init/unseal durumu kontrol ediliyor..."
   local status_json initialized sealed
   status_json="$(vexec_notoken status -format=json 2>/dev/null || echo '{}')"
-  initialized="$(echo "${status_json}" | jq -r '.initialized // false' 2>/dev/null)"
-  sealed="$(echo "${status_json}" | jq -r '.sealed // true' 2>/dev/null)"
+  # DÜZELTME (Faz 12i, code review #2 — KRİTİK): jq'nun `//` (alternative)
+  # operatörü, sol taraf `false` İKEN BİLE sağdaki varsayılanı devreye
+  # sokar (jq'da yalnızca `null` DEĞİL, `false` de "falsy"dir) — yani
+  # GERÇEKTEN unsealed (`sealed: false`) bir Vault için `.sealed // true`
+  # HER ZAMAN "true" döndürüyordu. Canlı doğrulama (kullanıcı tarafından):
+  # girdi `{"initialized":true,"sealed":false}` → çıktı `true`. Sonuç:
+  # sağlıklı bir Vault script tarafından SONSUZA KADAR "mühürlü" sanılıp
+  # kurulum orada dururdu. `has("sealed")` ile alan GERÇEKTEN eksik mi
+  # (aksine "false değerinde mi") ayrımı yapılıyor.
+  initialized="$(echo "${status_json}" | jq -r 'if has("initialized") then .initialized else false end' 2>/dev/null)"
+  sealed="$(echo "${status_json}" | jq -r 'if has("sealed") then .sealed else true end' 2>/dev/null)"
 
   if [[ "${initialized}" != "true" ]]; then
     warn "─────────────────────────────────────────────────────────────────"
@@ -709,9 +718,20 @@ enable_vault_tls() {
   # --- 2) TEK sertifika, TÜM pod'ları + Service'leri kapsayan SAN listesiyle
   # (runbook §3 "basitleştirilmiş öneri" — pod-başına ayrı sertifika/Secret
   # yönetimi yerine tek bir Secret, tek bir rotasyon noktası).
+  # DÜZELTME (Faz 12i, code review #3 — KRİTİK): common_name ÖNCEDEN
+  # "vault-server" idi — ama yukarıdaki rolün allowed_domains'i BUNU HİÇ
+  # İÇERMİYOR ("vault-internal", "vault.vault.svc.cluster.local",
+  # "vault-active.vault.svc.cluster.local" — allow_subdomains=true olsa
+  # bile "vault-server" bunların ALT ALAN ADI değil). Vault PKI, common_name
+  # allowed_domains'te (bare ya da subdomain olarak) YOKSA imzalama isteğini
+  # REDDEDER — SAN/alt_names listesinin doğru olması bu kontrolü ATLATMAZ.
+  # common_name, rolün KENDİSİNDE zaten TAM eşleşen bir giriş olan
+  # "vault-active.vault.svc.cluster.local"a çekildi (ayrıca istemcilerin
+  # GERÇEKTE bağlandığı adres budur — cert-manager/ESO/compositions hepsi
+  # bu adresi kullanıyor).
   local work; work="$(mktemp -d)"
   vexec write -format=json pki-int-dev/issue/vault-server \
-    common_name="vault-server" \
+    common_name="vault-active.vault.svc.cluster.local" \
     alt_names="vault-0.vault-internal,vault-1.vault-internal,vault-2.vault-internal,vault.vault.svc.cluster.local,vault-active.vault.svc.cluster.local" \
     ttl=2160h > "${work}/vault-server-cert.json"
   jq -r '.data.certificate + "\n" + .data.issuing_ca' "${work}/vault-server-cert.json" > "${work}/tls.crt"

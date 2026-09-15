@@ -1,0 +1,46 @@
+# =============================================================================
+# sync-wave 2 — OpenCost (tenant bazlı maliyet raporu, cost-center etiketine göre)
+#
+# kube-prometheus-stack'ten (wave 1) SONRA gelir — OpenCost, harici Prometheus
+# olarak o release'in Service'ini kullanıyor (opencost/values.yaml).
+#
+# `resources/custom-pricing-configmap.yaml.tpl` BİLEREK bu Application'ın
+# directory source'una DAHİL DEĞİL (fiyatlar Secret değil ama yine de .env
+# kaynaklı ${VAR} içerir) — 01-loki/01-tempo Application'larındaki AYNI
+# ilkeyle, 05-observability.sh bunu render edip DOĞRUDAN uygular. OpenCost
+# chart'ının kendisi sır İÇERMEDİĞİNDEN automated sync GÜVENLİDİR.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: opencost
+  namespace: argocd
+  labels:
+    platform.internal/layer: observability
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    - repoURL: "https://opencost.github.io/opencost-helm-chart"
+      chart: opencost
+      targetRevision: "1.39.0"
+      helm:
+        releaseName: opencost
+        valueFiles:
+          - $values/platform/control-plane/opencost/values.yaml
+    - repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
+      targetRevision: "main"
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: opencost
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true

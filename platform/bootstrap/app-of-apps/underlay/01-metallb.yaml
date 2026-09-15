@@ -1,0 +1,61 @@
+# sync-wave 1 — LoadBalancer. Cilium'dan sonra, depolamadan önce.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: underlay-metallb
+  namespace: argocd
+  labels:
+    platform.internal/layer: underlay
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    - repoURL: "https://metallb.github.io/metallb"
+      chart: metallb
+      targetRevision: "0.14.9"
+      helm:
+        releaseName: metallb
+        valueFiles:
+          - $values/platform/underlay/metallb/values.yaml
+    - repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
+      targetRevision: "main"
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metallb-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true
+---
+# sync-wave 2 — Adres havuzu. CRD'ler hazır olmadan uygulanamaz.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: underlay-metallb-config
+  namespace: argocd
+  labels:
+    platform.internal/layer: underlay
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: platform
+  source:
+    repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
+    targetRevision: "main"
+    path: platform/underlay/metallb/rendered
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metallb-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

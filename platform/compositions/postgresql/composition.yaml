@@ -102,7 +102,30 @@ spec:
                 "16" = "16.6"
                 "17" = "17.2"
             }
-            pgImage = "ghcr.io/cloudnative-pg/postgresql:${_pgImageTags[version]}"
+
+            # DÜZELTME (Faz 12i, code review #4): bu imaj ÖNCEDEN doğrudan
+            # `ghcr.io/cloudnative-pg/postgresql:...`dan çekiyordu — ama `policies/
+            # security/01-require-signed-images.yaml.tpl`'in `deny-non-harbor-images`
+            # kuralı (Faz 12g) tenant namespace'lerinde YALNIZCA Harbor imajlarına izin
+            # verir (bilinçli, imza zorunluluğunun asıl garantisi budur). Tenant
+            # namespace'leri o kuralın exclude listesinde YOKTUR (OLMAMALIDIR da —
+            # tenant workload'ları Harbor'dan geçmek ZORUNDADIR) — yani bu composition
+            # KENDİ ürettiği Postgres Cluster'ının imajı, KENDİ yazdığı politika
+            # tarafından REDDEDİLİYORDU. `_rgwEndpoint`'teki (yukarıda) AYNI gerekçeyle
+            # (KCL'in shell ortam değişkenlerine erişimi YOK) `_harborHostname` burada
+            # da BİLİNÇLİ OLARAK SABİTLENDİ — `.env.example`'ın HARBOR_HOSTNAME
+            # varsayılanıyla (`harbor.${PLATFORM_BASE_DOMAIN}`, örnek domain
+            # "apps.example.internal") EŞLEŞİR. GERÇEK bir dağıtımda PLATFORM_BASE_DOMAIN
+            # farklıysa BU SABİT GÜNCELLENMELİDİR (bkz. PLATFORM_CONTEXT.md teknik
+            # borcu — CEPH_OBJECTSTORE_NAME ile AYNI sınıf kısıt).
+            #
+            # BU İMAJIN GERÇEKTEN Harbor'a mirror'lanıp cosign ile imzalanması AYRI,
+            # operasyonel bir adımdır — bkz. platform/control-plane/harbor/
+            # README.md#upstream-imaj-mirror'lama (Faz 12i'de eklendi). Bu commit o
+            # adımı ÇALIŞTIRMADI (bu ortamda gerçek bir Harbor/cosign yok) — yalnızca
+            # composition'ın KENDİ politikasıyla TUTARLI hâle getirildi.
+            _harborHostname = "harbor.apps.example.internal"
+            pgImage = "${_harborHostname}/cloudnative-pg/postgresql:${_pgImageTags[version]}"
 
             # --- Rook-Ceph RGW — Faz 1'in sabit object store adına KENETLENMİŞ --------
             # CEPH_OBJECTSTORE_NAME=platform-store (platform/underlay/.env.example).
@@ -280,10 +303,22 @@ spec:
             #   4) Prometheus'tan (observability ns) metrics portuna ingress — aksi
             #      halde yukarıdaki ServiceMonitor'un scrape hedefi network seviyesinde
             #      erişilemez kalır, metrik toplanmaz.
-            # CNPG operatörünün pod'a doğrudan (instance-manager, port 8000) erişimi
-            # BİLİNÇLİ OLARAK eklenmedi: operatör henüz bu repoda bootstrap edilmedi
-            # (control-plane/README.md: "⬜ Faz 4"). Faz 4'te operatör kurulunca aynı
-            # desenle (cnpg-system ns'inden ingress) eklenmeli.
+            #
+            # DÜZELTME (Faz 12i, code review #5): Faz 12h'de CNPG operatörü GERÇEKTEN
+            # kuruldu (`apps/01-cnpg.yaml.tpl`) ama BU dosyadaki yorum hâlâ "operatör
+            # henüz bootstrap edilmedi, kurulunca eklenmeli" diyordu — operatör kurulmuş
+            # olmasına RAĞMEN gerekli kural HİÇ eklenmemişti (bakım adımı atlandı, tıpkı
+            # security/01-require-signed-images.yaml.tpl'in exclude listesindeki AYNI
+            # sınıf hata gibi). CNPG'nin resmi ağ gereksinimleri iki AYRI, eksiksiz yön
+            # gerektirir (bkz. CNPG dokümantasyonu "Network Requirements"):
+            #   5) cnpg-system'den instance-manager'a (8000) INGRESS — operatör bu
+            #      portu status sorgulamak/backup başlatmak/switchover yönetmek için
+            #      DOĞRUDAN çağırır (yalnızca Kubernetes API üzerinden DEĞİL).
+            #   6) Postgres pod'undan kube-apiserver'a EGRESS — instance manager,
+            #      KENDİ pod'unun status/annotation'larını güncellemek için Kubernetes
+            #      API sunucusuna bizzat bağlanır (bu, `toEntities: ["kube-apiserver"]`
+            #      ile IP'den BAĞIMSIZ olarak ifade edilir — apiserver'ın Pod IP'si
+            #      Cilium'un "reserved:kube-apiserver" entity'siyle otomatik eşleşir).
             # =============================================================================
             _pgAllowDns = {
                 toEndpoints = [
@@ -333,6 +368,18 @@ spec:
                                 {ports = [{port = "9187", protocol = "TCP"}]}
                             ]
                         }
+                        {
+                            # DÜZELTME (Faz 12i, code review #5): CNPG operatörü →
+                            # instance-manager (8000). Operatör bu portu status
+                            # sorgulamak/backup tetiklemek/switchover yönetmek için
+                            # DOĞRUDAN çağırır.
+                            fromEndpoints = [
+                                {matchLabels = {"k8s:io.kubernetes.pod.namespace" = "cnpg-system"}}
+                            ]
+                            toPorts = [
+                                {ports = [{port = "8000", protocol = "TCP"}]}
+                            ]
+                        }
                     ]
                     egress = [
                         _pgAllowDns
@@ -351,6 +398,12 @@ spec:
                             toPorts = [
                                 {ports = [{port = "80", protocol = "TCP"}]}
                             ]
+                        }
+                        {
+                            # DÜZELTME (Faz 12i, code review #5): instance-manager,
+                            # KENDİ pod'unun status/annotation'larını güncellemek için
+                            # Kubernetes API sunucusuna DOĞRUDAN bağlanır.
+                            toEntities = ["kube-apiserver"]
                         }
                     ]
                 }

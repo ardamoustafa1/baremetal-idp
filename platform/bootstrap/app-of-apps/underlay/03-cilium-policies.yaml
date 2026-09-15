@@ -1,0 +1,29 @@
+# sync-wave 9 — Ağ politikaları EN SON.
+#
+# Neden 9: default-deny, kendisinden önce gelen her şeyin sağlıklı olmasını
+# gerektirir. Daha erken bir wave'de uygulanırsa, henüz açık politikası olmayan
+# bileşenlerin trafiği kesilir ve sync sonsuza kadar bekler.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: underlay-network-policies
+  namespace: argocd
+  labels:
+    platform.internal/layer: underlay
+  annotations:
+    argocd.argoproj.io/sync-wave: "9"
+spec:
+  project: platform
+  source:
+    repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
+    targetRevision: "main"
+    path: platform/underlay/cilium/rendered
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kube-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

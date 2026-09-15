@@ -1,0 +1,50 @@
+# =============================================================================
+# sync-wave 2 — Vault (Faz 3)
+#
+# Multi-source Application: Helm chart (vault) + values.yaml git referansı.
+# `namespace.yaml` ARTIK bu Application'ın kaynağı DEĞİL (values.yaml, Helm
+# VALUES dosyasıdır — ArgoCD'nin ham K8s manifesti olarak parse etmeye
+# çalışması hataya yol açardı; bu yüzden ayrı bir directory-source değil,
+# `ref: values` kullanılıyor — Faz 2'nin crossplane/kyverno/eso Application'larıyla
+# BİREBİR AYNI desen).
+#
+# OTOMATİK SYNC HÂLÂ KASITLI OLARAK KAPALI:
+#   Vault init/unseal bir İNSAN eylemidir (docs/runbooks/vault-unseal.md).
+#   ArgoCD selfHeal açık olsaydı, Vault pod'ları restart olduğunda (örn. node
+#   drain) selfHeal'in Helm release'i "düzeltmeye" çalışması, break-glass
+#   prosedürü sırasında manuel müdahalelerle çakışabilirdi. Chart YENİDİR
+#   (Faz 1/2 gibi bir adoption riski yok) ama bilinçli olarak yine de manuel
+#   bırakıldı — PKI katmanının hassasiyeti nedeniyle.
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vault
+  namespace: argocd
+  labels:
+    platform.internal/layer: pki
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  sources:
+    - repoURL: "https://helm.releases.hashicorp.com"
+      chart: vault
+      targetRevision: "0.29.1"  # versions.env: VAULT_CHART_VERSION
+      helm:
+        releaseName: vault
+        valueFiles:
+          - $values/platform/pki/vault/values.yaml
+    - repoURL: "https://github.com/ardamoustafa1/baremetal-idp.git"
+      targetRevision: "main"
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vault
+  syncPolicy:
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=true
+    # automated: KASITLI OLARAK YOK — yukarıdaki notu okuyun.

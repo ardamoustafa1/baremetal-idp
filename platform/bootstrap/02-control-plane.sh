@@ -155,48 +155,49 @@ preflight() {
 }
 
 # =============================================================================
-# YARDIMCI: git-watched dizinlerdeki ${PLATFORM_REPO_URL} yer tutucularını
-# tespit et. Bunlar Faz1/Faz2'nin app-of-apps dizinlerinde YAŞAR ve ArgoCD
-# onları DOĞRUDAN git'ten okur — envsubst ile "render edip başka yere
-# yazmak" burada işe yaramaz, çünkü ArgoCD kendi git checkout'unu okur,
-# bizim ürettiğimiz yerel dosyayı değil. Tek doğru çözüm: bu dosyaları
-# GERÇEK repo URL'iyle YERİNDE değiştirip commit etmek — TEK SEFERLİK,
-# ortamdan bağımsız bir işlem (IP/parola gibi cluster'a özgü değil).
+# YARDIMCI: git-watched dizinlerdeki Application manifestlerinin ArgoCD
+# tarafından GERÇEKTEN keşfedilebilir olduğunu doğrular.
+#
+# DÜZELTME (Faz 12i, code review #1 — KRİTİK): bu fonksiyonun ÖNCEKİ hâli
+# yalnızca ${VAR}'ların .tpl dosyaları İÇİNDE çözülüp çözülmediğini
+# kontrol ediyordu — ama ArgoCD'nin `directory` source'u RESMİ olarak
+# yalnızca `.yaml`/`.yml`/`.json` uzantılarını yükler (bkz. https://argo-cd.
+# readthedocs.io/en/stable/user-guide/directory/ — "loads plain manifest
+# files from .yml, .yaml, and .json files"). `.tpl` dosyalarındaki ${VAR}'ı
+# YERİNDE sed'leyip AYNI `.tpl` uzantısıyla commit etmek TEK BAŞINA
+# YETERSİZDİ — root-app SIFIR child Application keşfediyordu, değişkenler
+# çözülmüş OLSA BİLE. Artık `platform/bootstrap/render-app-manifests.sh`,
+# `.tpl`'leri KANONİK ŞABLON olarak KORUYUP yanlarına GERÇEK `.yaml`
+# kardeşleri üretiyor (ArgoCD'nin OKUDUĞU budur) — bu fonksiyon artık o
+# script'in `--verify` modunu çağırıp DRİFT/eksik dosya olup olmadığını
+# kontrol ediyor.
 # =============================================================================
 check_git_placeholders_resolved() {
-  # platform/policies/security eklendi (kapsamlı-eksik-tamamlama görevi):
-  # 01-require-signed-images.yaml.tpl'nin ${HARBOR_HOSTNAME}'ı da AYNI
-  # sınıf risk taşıyor — ArgoCD bu dizini de DOĞRUDAN git'ten okuyor
-  # (bkz. apps/01-kyverno.yaml.tpl'in security source'u).
-  local dirs=("${BOOTSTRAP_APPS_DIR}" "${APPS_DIR}" "${REPO_ROOT}/platform/policies/security")
-  local hits=()
-  for d in "${dirs[@]}"; do
-    [[ -d "$d" ]] || continue
-    while IFS= read -r -d '' f; do
-      grep -qE '\$\{(PLATFORM_REPO_URL|TENANT_REQUESTS_REPO_URL|HARBOR_HOSTNAME)\}' "$f" && hits+=("$f")
-    done < <(find "$d" -name '*.tpl' -print0)
-  done
-  if (( ${#hits[@]} > 0 )); then
-    err "Aşağıdaki dosyalarda \${PLATFORM_REPO_URL}/\${TENANT_REQUESTS_REPO_URL}/\${HARBOR_HOSTNAME} HÂLÂ çözülmemiş:"
-    printf '         %s\n' "${hits[@]}" >&2
+  if ! "${REPO_ROOT}/platform/bootstrap/render-app-manifests.sh" --verify 2>&1 | tee /tmp/render-verify.out; then
     err ""
-    err "Bu dosyalar ArgoCD tarafından DOĞRUDAN git'ten okunur (root-app'ın"
-    err "directory source'u). Render edilmemiş \${VAR} ile commit edilirlerse"
-    err "ArgoCD chart/repo çözümlemesi başarısız olur (nuisance, veri kaybı"
-    err "değil — ama sync hiç ilerlemez)."
+    err "Yukarıdaki .tpl dosyaları için karşılık gelen .yaml dosyaları YOK ya"
+    err "da GÜNCEL DEĞİL — ArgoCD'nin platform-root Application'ı bu"
+    err "child Application'ları KEŞFEDEMEZ (directory source'u yalnızca"
+    err ".yaml/.yml/.json yükler, .tpl'i ASLA okumaz)."
     err ""
     err "TEK SEFERLİK düzeltme (bu değerler cluster'a değil REPO'ya özgüdür):"
-    err "  find ${BOOTSTRAP_APPS_DIR} ${APPS_DIR} ${REPO_ROOT}/platform/policies/security -name '*.tpl' -exec \\"
-    err "    sed -i '' \"s|\\\${PLATFORM_REPO_URL}|${PLATFORM_REPO_URL}|g; \\"
-    err "               s|\\\${PLATFORM_REPO_REVISION}|${PLATFORM_REPO_REVISION}|g; \\"
-    err "               s|\\\${TENANT_REQUESTS_REPO_URL}|${TENANT_REQUESTS_REPO_URL:-}|g; \\"
-    err "               s|\\\${HARBOR_HOSTNAME}|${HARBOR_HOSTNAME:-}|g\" {} +"
-    err "  git add ${BOOTSTRAP_APPS_DIR} ${APPS_DIR} ${REPO_ROOT}/platform/policies/security && git commit -m 'chore: repo URL/revizyonu somutlaştır'"
+    err "  export PLATFORM_REPO_URL=\"${PLATFORM_REPO_URL}\""
+    err "  export PLATFORM_REPO_REVISION=\"${PLATFORM_REPO_REVISION}\""
+    err "  ${REPO_ROOT}/platform/bootstrap/render-app-manifests.sh"
+    err "  git add platform/control-plane/apps platform/bootstrap/app-of-apps/underlay platform/policies/security"
+    err "  git commit -m 'chore: app manifestlerini render et'"
+    err ""
+    err "05/06-tenant-requests-*.yaml.tpl BİLİNÇLİ OLARAK render EDİLMEZ"
+    err "(TENANT_REQUESTS_REPO_URL henüz yok, ayrı repo oluşturulunca"
+    err "yeniden çalıştırın) — script bunları ATLADI diye UYARI verir,"
+    err "bu HATA sayılmaz."
     err ""
     err "Sonra bu script'i tekrar çalıştırın. (PLATFORM_CONTEXT.md teknik borç #10)"
+    rm -f /tmp/render-verify.out
     return 1
   fi
-  ok "Git-watched dizinlerde çözülmemiş \${PLATFORM_REPO_URL}/\${TENANT_REQUESTS_REPO_URL}/\${HARBOR_HOSTNAME} yok"
+  rm -f /tmp/render-verify.out
+  ok "Tüm render'lanmış .yaml Application manifestleri güncel (ArgoCD bunları keşfedebilir)"
 }
 
 # =============================================================================

@@ -89,6 +89,13 @@ spec:
                 - backstage
                 - pki-test
                 - observability-cert-alert-test
+                # DÜZELTME (Faz 12i, code review #4/#5'in yan bulgusu):
+                # cnpg-system/velero Faz 12h'de eklendi ama bu liste
+                # GÜNCELLENMEDİ — bu dosyanın kendi başlık yorumu "Yeni bir
+                # platform bileşeni eklendiğinde bu listeye MANUEL olarak
+                # eklenmesi gerekir" diyor; bu bakım adımı ATLANMIŞTI.
+                - cnpg-system
+                - velero
       validate:
         message: >-
           Bu namespace "pod-security.kubernetes.io/{enforce,audit,warn}: restricted"
